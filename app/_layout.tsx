@@ -1,3 +1,4 @@
+import '../src/lib/walkLocation';
 import { useEffect, useState } from 'react';
 import { Slot } from 'expo-router';
 import { Session } from '@supabase/supabase-js';
