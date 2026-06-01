@@ -41,7 +41,9 @@ export default function NewDog() {
       });
       if (uris.length) {
         const { data } = await supabase.auth.getUser();
-        await uploadDogImages(data.user!.id, dog.id, uris);
+        const uid = data.user?.id;
+        if (!uid) throw new Error('세션이 만료되었습니다. 다시 로그인해주세요.');
+        await uploadDogImages(uid, dog.id, uris);
       }
       router.back();
     } catch (e: any) { Alert.alert('등록 실패', e.message); }

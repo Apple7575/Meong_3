@@ -14,23 +14,28 @@ export async function uploadDogImages(
   localUris: string[],
 ): Promise<void> {
   const uploaded: string[] = [];
+  const insertedRowIds: string[] = [];
   try {
     for (let i = 0; i < localUris.length; i++) {
       const fileId = `${Date.now()}-${i}`;
       const path = buildImagePath(userId, dogId, fileId);
       const res = await fetch(localUris[i]);
-      const blob = await res.arrayBuffer();
-      const up = await supabase.storage.from('dog-images').upload(path, blob, {
+      const buffer = await res.arrayBuffer();
+      const up = await supabase.storage.from('dog-images').upload(path, buffer, {
         contentType: 'image/jpeg', upsert: false,
       });
       if (up.error) throw new Error(up.error.message);
       uploaded.push(path);
-      const row = await supabase.from('dog_images').insert({
-        dog_id: dogId, storage_path: path, is_primary: i === 0, sort_order: i,
-      });
-      if (row.error) throw new Error(row.error.message);
+      const { data: row, error: rowErr } = await supabase
+        .from('dog_images')
+        .insert({ dog_id: dogId, storage_path: path, is_primary: i === 0, sort_order: i })
+        .select('id')
+        .single();
+      if (rowErr) throw new Error(rowErr.message);
+      if (row?.id) insertedRowIds.push(row.id as string);
     }
   } catch (e) {
+    if (insertedRowIds.length) await supabase.from('dog_images').delete().in('id', insertedRowIds);
     if (uploaded.length) await supabase.storage.from('dog-images').remove(uploaded);
     throw e;
   }

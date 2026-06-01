@@ -27,7 +27,7 @@ export default function Home() {
       <Pressable style={styles.cta} onPress={() => router.push('/(app)/dogs/new')}>
         <Text style={styles.ctaText}>＋ 반려견 등록</Text>
       </Pressable>
-      <Pressable onPress={() => signOut()}><Text style={styles.signout}>로그아웃</Text></Pressable>
+      <Pressable onPress={async () => { try { await signOut(); } catch { /* 이미 화면을 떠나는 중 */ } }}><Text style={styles.signout}>로그아웃</Text></Pressable>
     </View>
   );
 }
