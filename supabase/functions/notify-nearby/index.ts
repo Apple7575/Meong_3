@@ -22,6 +22,7 @@ async function getAccessToken(saJson: string): Promise<{ token: string; projectI
     body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`,
   });
   const j = await resp.json();
+  if (!resp.ok || !j.access_token) throw new Error(`oauth token request failed: ${resp.status} ${JSON.stringify(j)}`);
   return { token: j.access_token, projectId: sa.project_id };
 }
 
@@ -41,25 +42,41 @@ Deno.serve(async (req) => {
     const { token: accessToken, projectId } = await getAccessToken(Deno.env.get('FCM_SERVICE_ACCOUNT')!);
     const results: SendResult[] = [];
     for (const r of recipients as { user_id: string; token: string }[]) {
-      const fr = await fetch(`https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`, {
-        method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildFcmMessage(r.token, { id: reportId, dogName })),
-      });
-      if (fr.ok) results.push({ user_id: r.user_id, token: r.token, ok: true });
-      else {
-        const err = await fr.json().catch(() => ({}));
-        // FCM v1 puts UNREGISTERED in error.details[].errorCode (not error.status)
-        const code = (err?.error?.details ?? []).find((d: any) => d?.errorCode)?.errorCode ?? err?.error?.status;
-        results.push({ user_id: r.user_id, token: r.token, ok: false, errorCode: code });
+      try {
+        const fr = await fetch(`https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`, {
+          method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildFcmMessage(r.token, { id: reportId, dogName })),
+        });
+        if (fr.ok) results.push({ user_id: r.user_id, token: r.token, ok: true });
+        else {
+          const err = await fr.json().catch(() => ({}));
+          // ONLY an FCM FcmError errorCode (from details) drives token cleanup — never the request-level
+          // status, so a payload-level INVALID_ARGUMENT can't delete valid tokens.
+          const fcmErrorCode = (err?.error?.details ?? []).find((d: any) => typeof d?.errorCode === 'string')?.errorCode;
+          results.push({ user_id: r.user_id, token: r.token, ok: false, errorCode: fcmErrorCode });
+        }
+      } catch (_e) {
+        // a thrown fetch (network) must not abort the whole batch or lose already-sent logs
+        results.push({ user_id: r.user_id, token: r.token, ok: false });
       }
     }
 
+    // Surface (not swallow) log/cleanup errors. Return 200 either way: pushes already went out, and a
+    // non-2xx would make the webhook retry → duplicate sends.
+    let logged = true;
+    let cleaned = true;
     const logs = buildLogRows(reportId, results);
-    if (logs.length) await supabase.from('notification_logs').insert(logs);
+    if (logs.length) {
+      const { error: e } = await supabase.from('notification_logs').insert(logs);
+      if (e) { logged = false; console.error('notification_logs insert failed', e); }
+    }
     const bad = invalidTokensFrom(results);
-    if (bad.length) await supabase.from('fcm_tokens').delete().in('token', bad);
+    if (bad.length) {
+      const { error: e } = await supabase.from('fcm_tokens').delete().in('token', bad);
+      if (e) { cleaned = false; console.error('fcm_tokens cleanup failed', e); }
+    }
 
-    return new Response(JSON.stringify({ sent: results.filter((r) => r.ok).length, total: results.length }), { headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ sent: results.filter((r) => r.ok).length, total: results.length, logged, cleaned }), { headers: { 'Content-Type': 'application/json' } });
   } catch (e) {
     return new Response(String(e), { status: 500 });
   }
