@@ -19,7 +19,7 @@ export class WalkSession {
   private dogId: string | null = null;
   private points: GeoPoint[] = [];
   private movingMs = 0;
-  private segStart: number | null = 0; // ms in relative/nowMs domain; 0 = session start
+  private segStart: number | null = null; // epoch ms when current recording segment began
   private listeners = new Set<() => void>();
   private chain: Promise<void> = Promise.resolve();
 
@@ -30,7 +30,7 @@ export class WalkSession {
 
   async start(startedAt: string, dogId: string | null = null): Promise<void> {
     this.state = 'recording'; this.startedAt = startedAt; this.endedAt = null; this.dogId = dogId;
-    this.points = []; this.movingMs = 0; this.segStart = 0;
+    this.points = []; this.movingMs = 0; this.segStart = Date.parse(startedAt);
     await this.persist(); this.emit();
   }
 
@@ -66,9 +66,10 @@ export class WalkSession {
   getStartedAt(): string | null { return this.startedAt; }
 
   finish(endedAt: string): WalkSummary {
-    // Compute moving time from ISO timestamps (accurate wall-clock duration)
-    if (this.state === 'recording' && this.startedAt != null) {
-      this.movingMs = Date.parse(endedAt) - Date.parse(this.startedAt);
+    // Add only the final recording segment to accumulated moving time (excludes pauses).
+    const endMs = Date.parse(endedAt);
+    if (this.state === 'recording' && this.segStart != null) {
+      this.movingMs += endMs - this.segStart;
     }
     this.endedAt = endedAt; this.state = 'finished'; this.segStart = null;
     void this.persist();

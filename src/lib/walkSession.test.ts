@@ -15,11 +15,12 @@ test('ingest filters jitter/spikes; distance from accepted points', async () => 
 });
 test('moving time excludes pause', async () => {
   const s = new WalkSession(memoryStore());
-  await s.start('2026-06-02T00:00:00Z'); // segStart = 0ms (parsed)
-  s.pause(60_000);   // 60s moving
-  s.resume(120_000); // paused 60s (not counted)
-  // at 150_000 → moving = 60 + 30 = 90s
-  expect(s.getMovingSeconds(150_000)).toBe(90);
+  const T0 = Date.parse('2026-06-02T00:00:00Z'); // same epoch domain as start/pause/resume
+  await s.start('2026-06-02T00:00:00Z');
+  s.pause(T0 + 60_000);   // 60s moving
+  s.resume(T0 + 120_000); // paused 60s (not counted)
+  // at T0+150s → moving = 60 + 30 = 90s
+  expect(s.getMovingSeconds(T0 + 150_000)).toBe(90);
 });
 test('finish keeps buffer until commitSaved; summary uses moving time', async () => {
   const store = memoryStore();
