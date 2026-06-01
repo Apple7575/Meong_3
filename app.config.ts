@@ -6,7 +6,6 @@ const config: ExpoConfig = {
   scheme: 'meongbackhome',
   version: '0.1.0',
   orientation: 'portrait',
-  newArchEnabled: true,
   ios: { bundleIdentifier: 'com.meongbackhome.app', supportsTablet: false },
   android: { package: 'com.meongbackhome.app' },
   plugins: [
