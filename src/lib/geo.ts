@@ -20,7 +20,8 @@ export function acceptPoint(last: GeoPoint | null, p: GeoPoint, opts: AcceptOpts
   const dist = haversineMeters(last, p);
   if (dist < minMove) return false;
   const dtSec = (p.t - last.t) / 1000;
-  if (dtSec > 0 && dist / dtSec > maxSpeed) return false;
+  if (dtSec <= 0) return false; // moved with non-increasing timestamp = implausible (GPS spike/dupe)
+  if (dist / dtSec > maxSpeed) return false;
   return true;
 }
 

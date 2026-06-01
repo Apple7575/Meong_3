@@ -60,6 +60,7 @@ export class WalkSession {
     if (this.state === 'recording' && this.segStart != null) ms += nowMs - this.segStart;
     return Math.floor(ms / 1000);
   }
+  flush(): Promise<void> { return this.chain; } // await all pending persists (UI may call before navigating)
   getDistanceM(): number { return accumulateDistance(this.points); }
   getPoints(): GeoPoint[] { return this.points; }
   getState(): State { return this.state; }
@@ -115,10 +116,9 @@ export class WalkSession {
       points: this.points, movingMs: this.movingMs, state: this.state,
     };
     const s = JSON.stringify(snap);
-    // Call save immediately (sync body for in-memory store, async for AsyncStorage).
-    // Chain maintains serialization order for concurrent calls.
-    const p = this.store.save(s).catch(() => {});
-    this.chain = this.chain.then(() => p);
-    return p;
+    // Serialize the save INSIDE the chain so an older slow write cannot land
+    // after a newer one (stale-snapshot race on real async storage).
+    this.chain = this.chain.then(() => this.store.save(s)).catch(() => {});
+    return this.chain;
   }
 }

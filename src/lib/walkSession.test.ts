@@ -48,6 +48,7 @@ test('recover restores points as paused (recording crash)', async () => {
   const a = new WalkSession(store);
   await a.start('2026-06-02T00:00:00Z', 'dog1');
   a.ingest([P(37, 0), P(37.001, 120000)]);
+  await a.flush(); // ensure persisted (in real life recovery happens on a fresh launch)
   const b = new WalkSession(store);
   const r = await b.recover();
   expect(r.found).toBe(true);
@@ -61,6 +62,7 @@ test('recover restores finished state', async () => {
   await a.start('2026-06-02T00:00:00Z');
   a.ingest([P(37, 0), P(37.001, 120000)]);
   a.finish('2026-06-02T00:02:00Z');
+  await a.flush(); // ensure persisted before a fresh session recovers
   const b = new WalkSession(store);
   const r = await b.recover();
   expect(r.state).toBe('finished');
@@ -72,4 +74,22 @@ test('subscribe notified on ingest', async () => {
   await s.start('2026-06-02T00:00:00Z');
   s.ingest([P(37, 0)]);
   expect(n).toBe(1);
+});
+test('persist serializes: latest snapshot wins despite a slow mid write', async () => {
+  let last: string | null = null;
+  const store: PersistAdapter = {
+    save: async (s) => {
+      const pts = JSON.parse(s).points.length;
+      if (pts === 1) await new Promise((r) => setTimeout(r, 30)); // slow the 1-point write
+      last = s;
+    },
+    load: async () => last,
+    clear: async () => { last = null; },
+  };
+  const s = new WalkSession(store);
+  await s.start('2026-06-02T00:00:00Z');         // points 0
+  s.ingest([P(37, 0)]);                          // points 1 (slow save)
+  s.ingest([P(37.001, 90000)]);                  // points 2
+  await s.flush();
+  expect(JSON.parse(last!).points.length).toBe(2); // serialized → latest persisted, not the stale slow write
 });

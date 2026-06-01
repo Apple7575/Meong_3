@@ -18,6 +18,11 @@ describe('geo', () => {
     // ~111m in 1s = 111 m/s >> 8 m/s → reject (GPS spike after signal loss)
     expect(acceptPoint(last, { lat: 37.001, lng: 127, accuracy: 5, t: 1000 })).toBe(false);
   });
+  test('acceptPoint rejects moved point with non-increasing time', () => {
+    const last: GeoPoint = { lat: 37, lng: 127, accuracy: 5, t: 1000 };
+    expect(acceptPoint(last, { lat: 37.001, lng: 127, accuracy: 5, t: 1000 })).toBe(false); // same ms, 111m
+    expect(acceptPoint(last, { lat: 37.001, lng: 127, accuracy: 5, t: 500 })).toBe(false);  // earlier ms
+  });
   test('acceptPoint accepts plausible walking move', () => {
     const last: GeoPoint = { lat: 37, lng: 127, accuracy: 5, t: 0 };
     // ~111m in 90s = 1.23 m/s → accept
