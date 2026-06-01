@@ -23,10 +23,9 @@ export async function createSighting(input: { reportId: string; lat: number; lng
 }
 
 export async function listSightingsForReport(reportId: string): Promise<Sighting[]> {
-  const { data, error } = await supabase.from('sightings').select('*').eq('report_id', reportId).order('seen_at', { ascending: true });
+  const { data, error } = await supabase.rpc('report_sightings', { p_report_id: reportId });
   if (error) throw new Error(error.message);
-  // geography column comes back as GeoJSON/EWKB depending on config; resolve lat/lng best-effort
-  return (data ?? []).map((r: any) => ({ ...r, lat: r.lat ?? null, lng: r.lng ?? null })) as Sighting[];
+  return (data ?? []) as Sighting[];
 }
 
 export async function uploadSightingImages(userId: string, sightingId: string, localUris: string[]): Promise<void> {

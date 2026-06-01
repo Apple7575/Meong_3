@@ -6,9 +6,11 @@ const mockOrder = jest.fn();
 const mockEq = jest.fn(() => ({ order: mockOrder }));
 const mockSelect = jest.fn(() => ({ eq: mockEq }));
 const mockFrom = jest.fn(() => ({ insert: mockInsert, select: mockSelect }));
+const mockRpc = jest.fn();
 jest.mock('../lib/supabase', () => ({
   supabase: {
     from: (...a: any[]) => (mockFrom as any)(...a),
+    rpc: (...a: any[]) => (mockRpc as any)(...a),
     auth: { getUser: jest.fn(async () => ({ data: { user: { id: 'u1' } } })) },
   },
 }));
@@ -26,10 +28,9 @@ test('createSighting inserts WKT point + reporter + report', async () => {
   }));
   expect(id).toBe('s1');
 });
-test('listSightingsForReport orders by seen_at asc', async () => {
-  mockOrder.mockResolvedValueOnce({ data: [{ id: 's1' }], error: null });
+test('listSightingsForReport calls report_sightings rpc', async () => {
+  mockRpc.mockResolvedValueOnce({ data: [{ id: 's1', lat: 37, lng: 127 }], error: null });
   const rows = await listSightingsForReport('r1');
-  expect(mockEq).toHaveBeenCalledWith('report_id', 'r1');
-  expect(mockOrder).toHaveBeenCalledWith('seen_at', { ascending: true });
+  expect(mockRpc).toHaveBeenCalledWith('report_sightings', { p_report_id: 'r1' });
   expect(rows).toHaveLength(1);
 });
