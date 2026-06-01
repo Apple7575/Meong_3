@@ -11,6 +11,14 @@ export function invalidTokensFrom(results: SendResult[]): string[] {
   return results.filter((r) => !r.ok && r.errorCode && CLEANUP_CODES.has(r.errorCode)).map((r) => r.token);
 }
 
+/** Pull the token-cleanup code ONLY from a genuine FcmError detail — never a request-level error.status. */
+export function extractFcmErrorCode(errBody: unknown): string | undefined {
+  const details = (errBody as any)?.error?.details ?? [];
+  return details.find(
+    (d: any) => typeof d?.['@type'] === 'string' && d['@type'].includes('FcmError') && typeof d?.errorCode === 'string',
+  )?.errorCode;
+}
+
 /** The chat participant who is NOT the sender. null if the sender isn't a participant. */
 export function recipientOf(chat: { owner_id: string; reporter_id: string }, senderId: string): string | null {
   if (senderId === chat.owner_id) return chat.reporter_id;
@@ -61,10 +69,7 @@ export async function dispatchPush(
       else {
         const err = await fr.json().catch(() => ({}));
         // only a genuine FcmError detail drives token cleanup (not request-level errors)
-        const fcmErrorCode = (err?.error?.details ?? []).find(
-          (d: any) => typeof d?.['@type'] === 'string' && d['@type'].includes('FcmError') && typeof d?.errorCode === 'string',
-        )?.errorCode;
-        results.push({ user_id: r.user_id, token: r.token, ok: false, errorCode: fcmErrorCode });
+        results.push({ user_id: r.user_id, token: r.token, ok: false, errorCode: extractFcmErrorCode(err) });
       }
     } catch (_e) {
       results.push({ user_id: r.user_id, token: r.token, ok: false });
