@@ -40,13 +40,27 @@ export default function WalkScreen() {
     const perm = await requestWalkPermissions();
     if (!perm.foreground) { Alert.alert('위치 권한 필요', '위치 권한을 허용해야 산책을 기록할 수 있어요.'); return; }
     if (!perm.background) Alert.alert('백그라운드 권한 제한', '화면을 켠 채로 기록됩니다. 정확한 기록을 위해 설정에서 "항상 허용"을 권장해요.');
+    try {
+      await startWalkUpdates(); // start the tracker FIRST; only mark recording if it actually starts
+    } catch (e: any) {
+      Alert.alert('산책 시작 실패', `위치 추적을 시작하지 못했어요: ${e.message}`);
+      return;
+    }
     await walkSession.start(new Date().toISOString(), dogId);
-    await startWalkUpdates();
+  }
+  async function resumeWalk() {
+    try {
+      await startWalkUpdates(); // idempotent; restarts the tracker for a recovered/crashed session
+    } catch (e: any) {
+      Alert.alert('재개 실패', `위치 추적을 재개하지 못했어요: ${e.message}`);
+      return;
+    }
+    walkSession.resume();
   }
   async function finish() {
-    await stopWalkUpdates();
+    try { await stopWalkUpdates(); } catch { /* best-effort: still produce the summary */ }
     walkSession.finish(new Date().toISOString());
-    router.push('/(app)/walk/summary');
+    router.replace('/(app)/walk/summary'); // replace so back-nav can't expose the finished session
   }
 
   const km = (distanceM / 1000).toFixed(2);
@@ -72,7 +86,7 @@ export default function WalkScreen() {
         <Pressable style={styles.start} onPress={start}><Text style={styles.startText}>산책 시작</Text></Pressable>
       ) : (
         <View style={styles.row}>
-          <Pressable style={styles.pause} onPress={() => (state === 'paused' ? walkSession.resume() : walkSession.pause())}>
+          <Pressable style={styles.pause} onPress={() => (state === 'paused' ? resumeWalk() : walkSession.pause())}>
             <Text style={styles.pauseText}>{state === 'paused' ? '▶ 재개' : '⏸ 일시정지'}</Text>
           </Pressable>
           <Pressable style={styles.stop} onPress={finish}><Text style={styles.stopText}>⏹ 종료</Text></Pressable>

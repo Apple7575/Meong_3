@@ -18,6 +18,7 @@ export default function Home() {
   useEffect(() => { refresh(); }, []);
 
   useFocusEffect(useCallback(() => {
+    if (walkSession.getState() !== 'idle') return; // don't clobber an active in-memory walk
     walkSession.recover().then((r) => {
       if (!r.found) return;
       Alert.alert('진행 중이던 산책', '저장하지 못한 산책이 있어요. 이어서 진행할까요?', [

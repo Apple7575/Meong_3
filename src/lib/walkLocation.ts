@@ -25,6 +25,7 @@ export async function requestWalkPermissions(): Promise<WalkPermission> {
 }
 
 export async function startWalkUpdates(): Promise<void> {
+  if (await TaskManager.isTaskRegisteredAsync(WALK_TASK)) return; // idempotent: already tracking
   await Location.startLocationUpdatesAsync(WALK_TASK, {
     accuracy: Location.Accuracy.BestForNavigation,
     timeInterval: 3000, distanceInterval: 5,
