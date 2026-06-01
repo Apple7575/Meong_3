@@ -26,32 +26,45 @@ describe('crisis RLS + radius', () => {
   let near: Awaited<ReturnType<typeof makeUser>>;
   let far: Awaited<ReturnType<typeof makeUser>>;
   let dogId: string; let reportId: string;
+  // Unique per-run center derived from near.id (random UUID) in a remote ocean band, so the
+  // absolute count_users_near assertion is isolated from user_locations left by prior test runs.
+  let center: { lat: number; lng: number };
 
   beforeAll(async () => {
     const stamp = Date.now();
     owner = await makeUser(`own-${stamp}@t.dev`);
     near = await makeUser(`near-${stamp}@t.dev`);
     far = await makeUser(`far-${stamp}@t.dev`);
+    const hx = parseInt(near.id.replace(/-/g, '').slice(0, 6), 16); // 0..16777215
+    center = { lat: 10 + (hx % 1000) / 100, lng: 150 + (hx % 1000) / 100 }; // ~10-20N, 150-160E (Pacific)
     // dog owned by owner
     const dog = await owner.client.from('dogs').insert({ owner_id: owner.id, name: '초코' }).select('id').single();
     dogId = (dog.data as any).id;
-    // locations: owner + near within radius of (37.65,127.07), far ~5km away
-    await setLocation(owner.id, 37.650, 127.070);
-    await setLocation(near.id, 37.651, 127.071);
-    await setLocation(far.id, 37.70, 127.13);
+    // locations: owner + near within ~2km of center, far ~33km away
+    await setLocation(owner.id, center.lat, center.lng);
+    await setLocation(near.id, center.lat, center.lng + 0.005);
+    await setLocation(far.id, center.lat + 0.3, center.lng);
     // tokens for ALL three so owner-exclusion (by owner_id) and far-exclusion (out of radius) are actually exercised
     await admin.from('fcm_tokens').insert([
       { user_id: owner.id, token: `tok-own-${stamp}`, platform: 'ios' },
       { user_id: near.id, token: `tok-near-${stamp}`, platform: 'ios' },
       { user_id: far.id, token: `tok-far-${stamp}`, platform: 'ios' },
     ]);
-    // owner creates active report, radius 2000m at (37.65,127.07)
+    // owner creates active report, radius 2000m at center
     const rep = await owner.client.from('missing_reports').insert({
       owner_id: owner.id, dog_id: dogId,
-      last_seen_point: 'SRID=4326;POINT(127.07 37.65)',
+      last_seen_point: `SRID=4326;POINT(${center.lng} ${center.lat})`,
       last_seen_at: new Date().toISOString(), alert_radius_m: 2000,
     }).select('id').single();
     reportId = (rep.data as any).id;
+  });
+
+  afterAll(async () => {
+    // keep the local DB from accumulating locations/tokens across runs (so the count stays isolated)
+    for (const u of [owner, near, far].filter(Boolean)) {
+      await admin.from('user_locations').delete().eq('user_id', u.id);
+      await admin.from('fcm_tokens').delete().eq('user_id', u.id);
+    }
   });
 
   test('neighbor can read an ACTIVE report and the linked dog', async () => {
@@ -81,8 +94,8 @@ describe('crisis RLS + radius', () => {
   });
 
   test('count_users_near excludes caller, counts only within radius', async () => {
-    // owner previews reach at the report point with 2km: near(in) counts, far(out) excluded, owner(self) excluded
-    const { data, error } = await owner.client.rpc('count_users_near', { lat: 37.65, lng: 127.07, radius_m: 2000 });
+    // owner previews reach at the (unique) center with 2km: near(in) counts, far(out) excluded, owner(self) excluded
+    const { data, error } = await owner.client.rpc('count_users_near', { lat: center.lat, lng: center.lng, radius_m: 2000 });
     expect(error).toBeNull();
     expect(data).toBe(1);
   });
