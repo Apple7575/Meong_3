@@ -52,7 +52,7 @@ create table public.missing_reports (
   status text not null default 'active' check (status in ('active','resolved','expired')),
   last_seen_point geography(Point,4326) not null,
   last_seen_at timestamptz not null,
-  alert_radius_m int not null check (alert_radius_m > 0),
+  alert_radius_m int not null check (alert_radius_m between 300 and 10000),
   note text,
   expires_at timestamptz not null default (now() + interval '14 days'),
   created_at timestamptz not null default now(),
@@ -97,32 +97,36 @@ alter table public.sightings enable row level security;
 alter table public.sighting_images enable row level security;
 alter table public.notification_logs enable row level security;
 
--- missing_reports: owner full; any authed user reads ACTIVE
-create policy "mr_select" on public.missing_reports for select
+-- missing_reports: owner full; any AUTHENTICATED user reads ACTIVE (anon excluded via TO authenticated).
+-- INSERT/UPDATE additionally require the dog to belong to the reporting owner.
+create policy "mr_select" on public.missing_reports for select to authenticated
   using (owner_id = auth.uid() or status = 'active');
-create policy "mr_insert_own" on public.missing_reports for insert with check (owner_id = auth.uid());
-create policy "mr_update_own" on public.missing_reports for update using (owner_id = auth.uid()) with check (owner_id = auth.uid());
-create policy "mr_delete_own" on public.missing_reports for delete using (owner_id = auth.uid());
+create policy "mr_insert_own" on public.missing_reports for insert to authenticated
+  with check (owner_id = auth.uid() and exists (select 1 from public.dogs d where d.id = dog_id and d.owner_id = auth.uid()));
+create policy "mr_update_own" on public.missing_reports for update to authenticated
+  using (owner_id = auth.uid())
+  with check (owner_id = auth.uid() and exists (select 1 from public.dogs d where d.id = dog_id and d.owner_id = auth.uid()));
+create policy "mr_delete_own" on public.missing_reports for delete to authenticated using (owner_id = auth.uid());
 
--- dogs / dog_images: add SELECT for dogs linked to an ACTIVE report (SP1 left this as a TODO)
-create policy "dogs_select_active_report" on public.dogs for select
+-- dogs / dog_images: add SELECT for dogs linked to an ACTIVE report (SP1 left this as a TODO). Authed only.
+create policy "dogs_select_active_report" on public.dogs for select to authenticated
   using (exists (select 1 from public.missing_reports r where r.dog_id = dogs.id and r.status = 'active'));
-create policy "dog_images_select_active_report" on public.dog_images for select
+create policy "dog_images_select_active_report" on public.dog_images for select to authenticated
   using (exists (select 1 from public.dogs d join public.missing_reports r on r.dog_id = d.id
                  where d.id = dog_images.dog_id and r.status = 'active'));
 
 -- sightings: insert by reporter on active report; read by reporter or report owner
-create policy "s_insert" on public.sightings for insert
+create policy "s_insert" on public.sightings for insert to authenticated
   with check (reporter_id = auth.uid()
               and exists (select 1 from public.missing_reports r where r.id = report_id and r.status = 'active'));
-create policy "s_select" on public.sightings for select
+create policy "s_select" on public.sightings for select to authenticated
   using (reporter_id = auth.uid()
          or exists (select 1 from public.missing_reports r where r.id = report_id and r.owner_id = auth.uid()));
 
 -- sighting_images: follow parent sighting visibility
-create policy "si_insert" on public.sighting_images for insert
+create policy "si_insert" on public.sighting_images for insert to authenticated
   with check (exists (select 1 from public.sightings s where s.id = sighting_id and s.reporter_id = auth.uid()));
-create policy "si_select" on public.sighting_images for select
+create policy "si_select" on public.sighting_images for select to authenticated
   using (exists (select 1 from public.sightings s where s.id = sighting_id
                  and (s.reporter_id = auth.uid()
                       or exists (select 1 from public.missing_reports r where r.id = s.report_id and r.owner_id = auth.uid()))));
@@ -139,6 +143,13 @@ create policy "sight_img_select_owner_or_reporter" on storage.objects for select
     or exists (select 1 from public.sightings s join public.missing_reports r on r.id = s.report_id
                where s.id::text = (storage.foldername(name))[2] and r.owner_id = auth.uid())
   ));
+
+-- dog-images (SP1 bucket, path {user_id}/{dog_id}/...): allow authed read when the dog is in an ACTIVE report
+-- (OR's with SP1's owner-only policy, so neighbors can see the missing dog's photo).
+create policy "dog_img_select_active_report" on storage.objects for select to authenticated
+  using (bucket_id = 'dog-images' and exists (
+    select 1 from public.missing_reports r
+    where r.dog_id::text = (storage.foldername(name))[2] and r.status = 'active'));
 ```
 
 - [ ] **Step 2: 적용 + 클린 재적용** — `npx supabase migration up`; `npx supabase db reset --no-seed` (0001–0007 클린).
@@ -173,6 +184,10 @@ language sql security definer set search_path = public as $$
   join public.fcm_tokens t on t.user_id = ul.user_id
   where r.id = p_report_id and ul.user_id <> r.owner_id;
 $$;
+
+-- SECURITY: tokens_near_report exposes FCM tokens. Only the Edge Function (service_role) may call it.
+revoke execute on function public.tokens_near_report(uuid) from anon, authenticated;
+grant execute on function public.tokens_near_report(uuid) to service_role;
 ```
 
 - [ ] **Step 2: 적용** — `npx supabase migration up`.
@@ -224,9 +239,16 @@ describe('crisis RLS + radius', () => {
     // dog owned by owner
     const dog = await owner.client.from('dogs').insert({ owner_id: owner.id, name: '초코' }).select('id').single();
     dogId = (dog.data as any).id;
-    // locations: near within 1km of (37.65,127.07), far ~5km away
+    // locations: owner + near within radius of (37.65,127.07), far ~5km away
+    await setLocation(owner.id, 37.650, 127.070);
     await setLocation(near.id, 37.651, 127.071);
     await setLocation(far.id, 37.70, 127.13);
+    // tokens for ALL three so owner-exclusion (by owner_id) and far-exclusion (out of radius) are actually exercised
+    await admin.from('fcm_tokens').insert([
+      { user_id: owner.id, token: `tok-own-${stamp}`, platform: 'ios' },
+      { user_id: near.id, token: `tok-near-${stamp}`, platform: 'ios' },
+      { user_id: far.id, token: `tok-far-${stamp}`, platform: 'ios' },
+    ]);
     // owner creates active report, radius 2000m at (37.65,127.07)
     const rep = await owner.client.from('missing_reports').insert({
       owner_id: owner.id, dog_id: dogId,
@@ -269,14 +291,31 @@ describe('crisis RLS + radius', () => {
     expect(data).toBe(1);
   });
 
-  test('tokens_near_report returns nearby non-owner tokens', async () => {
-    // give near a token
-    await admin.from('fcm_tokens').insert({ user_id: near.id, token: `tok-${Date.now()}`, platform: 'ios' });
+  test('tokens_near_report returns nearby non-owner tokens (owner+far have tokens too, must be excluded)', async () => {
     const { data, error } = await admin.rpc('tokens_near_report', { p_report_id: reportId });
     expect(error).toBeNull();
-    expect((data as any[]).some((row) => row.user_id === near.id)).toBe(true);
-    expect((data as any[]).some((row) => row.user_id === owner.id)).toBe(false); // owner excluded
-    expect((data as any[]).some((row) => row.user_id === far.id)).toBe(false);    // far has no token + out of radius
+    expect((data as any[]).some((row) => row.user_id === near.id)).toBe(true);  // in radius
+    expect((data as any[]).some((row) => row.user_id === owner.id)).toBe(false); // excluded by owner_id (even though in radius + has token)
+    expect((data as any[]).some((row) => row.user_id === far.id)).toBe(false);   // out of radius (even though has token)
+  });
+
+  test('anonymous (signed-out) cannot read active reports (TO authenticated)', async () => {
+    const anon = createClient(URL, ANON, { auth: { persistSession: false } });
+    const { data } = await anon.from('missing_reports').select('id').eq('id', reportId);
+    expect(data ?? []).toEqual([]);
+  });
+
+  test('cannot create a report for a dog you do not own', async () => {
+    const { error } = await near.client.from('missing_reports').insert({
+      owner_id: near.id, dog_id: dogId, // owner's dog, not near's
+      last_seen_point: 'SRID=4326;POINT(127.07 37.65)', last_seen_at: new Date().toISOString(), alert_radius_m: 2000,
+    });
+    expect(error).not.toBeNull(); // mr_insert with-check requires dog ownership
+  });
+
+  test('clients cannot call tokens_near_report (execute revoked)', async () => {
+    const { error } = await near.client.rpc('tokens_near_report', { p_report_id: reportId });
+    expect(error).not.toBeNull();
   });
 });
 ```
@@ -300,6 +339,8 @@ export type MissingReport = {
   expires_at: string; created_at: string; updated_at: string; resolved_at: string | null;
 };
 export type MissingReportWithDog = MissingReport & { dog: { name: string; breed: string | null; features: string | null } | null };
+// getReport() returns this — last-seen coords resolved by the report_detail RPC (list leaves them off).
+export type ReportDetail = MissingReportWithDog & { last_seen_lat: number; last_seen_lng: number };
 export type Sighting = {
   id: string; report_id: string; reporter_id: string;
   seen_at: string; note: string | null; created_at: string;
@@ -316,12 +357,14 @@ describe('report validation', () => {
   const future = new Date(Date.now() + 3600_000).toISOString();
   const past = new Date(Date.now() - 3600_000).toISOString();
 
-  test('report requires dog, valid radius, non-future last_seen', () => {
-    expect(validateReportForm({ dogId: '', radiusM: 2000, lastSeenAt: past }).valid).toBe(false);
-    expect(validateReportForm({ dogId: 'd1', radiusM: 50, lastSeenAt: past }).valid).toBe(false);    // radius too small
-    expect(validateReportForm({ dogId: 'd1', radiusM: 99999, lastSeenAt: past }).valid).toBe(false); // too big
-    expect(validateReportForm({ dogId: 'd1', radiusM: 2000, lastSeenAt: future }).valid).toBe(false);// future
-    expect(validateReportForm({ dogId: 'd1', radiusM: 2000, lastSeenAt: past }).valid).toBe(true);
+  test('report requires dog, valid coords, valid radius, non-future last_seen', () => {
+    expect(validateReportForm({ dogId: '', radiusM: 2000, lastSeenAt: past, lat: 37, lng: 127 }).valid).toBe(false);
+    expect(validateReportForm({ dogId: 'd1', radiusM: 2000, lastSeenAt: past, lat: null, lng: null }).valid).toBe(false); // no coords
+    expect(validateReportForm({ dogId: 'd1', radiusM: 2000, lastSeenAt: past, lat: 999, lng: 127 }).valid).toBe(false);   // out of range
+    expect(validateReportForm({ dogId: 'd1', radiusM: 50, lastSeenAt: past, lat: 37, lng: 127 }).valid).toBe(false);      // radius too small
+    expect(validateReportForm({ dogId: 'd1', radiusM: 99999, lastSeenAt: past, lat: 37, lng: 127 }).valid).toBe(false);   // too big
+    expect(validateReportForm({ dogId: 'd1', radiusM: 2000, lastSeenAt: future, lat: 37, lng: 127 }).valid).toBe(false);  // future
+    expect(validateReportForm({ dogId: 'd1', radiusM: 2000, lastSeenAt: past, lat: 37, lng: 127 }).valid).toBe(true);
   });
   test('sighting requires non-future seen_at and a point', () => {
     expect(validateSightingForm({ seenAt: future, lat: 37, lng: 127 }).valid).toBe(false);
@@ -338,16 +381,23 @@ describe('report validation', () => {
 export const MIN_RADIUS_M = 300;
 export const MAX_RADIUS_M = 10000;
 
-export function validateReportForm(input: { dogId: string; radiusM: number; lastSeenAt: string }): { valid: boolean; errors: string[] } {
+// finite + earth-range guard — coords feed a WKT string sent to PostGIS, so reject NaN/Infinity/out-of-range.
+export function isValidCoord(lat: number | null, lng: number | null): boolean {
+  return lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng)
+    && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+}
+
+export function validateReportForm(input: { dogId: string; radiusM: number; lastSeenAt: string; lat: number | null; lng: number | null }): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
   if (!input.dogId) errors.push('실종된 반려견을 선택하세요.');
+  if (!isValidCoord(input.lat, input.lng)) errors.push('마지막 목격 위치를 지도에서 선택하세요.');
   if (input.radiusM < MIN_RADIUS_M || input.radiusM > MAX_RADIUS_M) errors.push(`알림 반경은 ${MIN_RADIUS_M}m~${MAX_RADIUS_M}m 사이여야 합니다.`);
   if (Date.parse(input.lastSeenAt) > Date.now()) errors.push('마지막 목격 시각이 미래일 수 없습니다.');
   return { valid: errors.length === 0, errors };
 }
 export function validateSightingForm(input: { seenAt: string; lat: number | null; lng: number | null }): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
-  if (input.lat == null || input.lng == null) errors.push('목격 위치를 지도에서 선택하세요.');
+  if (!isValidCoord(input.lat, input.lng)) errors.push('목격 위치를 지도에서 선택하세요.');
   if (Date.parse(input.seenAt) > Date.now()) errors.push('목격 시각이 미래일 수 없습니다.');
   return { valid: errors.length === 0, errors };
 }
@@ -445,11 +495,12 @@ export async function listMyReports(): Promise<MissingReportWithDog[]> {
   if (error) throw new Error(error.message);
   return (data ?? []) as MissingReportWithDog[];
 }
-export async function getReport(id: string): Promise<MissingReportWithDog> {
-  const { data, error } = await supabase.from('missing_reports')
-    .select('*, dog:dogs(name,breed,features)').eq('id', id).single();
+export async function getReport(id: string): Promise<ReportDetail> {
+  // report_detail RPC returns report fields + dog + last_seen_lat/lng (geography decomposed),
+  // with RLS-equivalent visibility enforced inside the SECURITY DEFINER function.
+  const { data, error } = await supabase.rpc('report_detail', { p_id: id }).single();
   if (error) throw new Error(error.message);
-  return data as MissingReportWithDog;
+  return data as ReportDetail;
 }
 export async function resolveReport(id: string): Promise<void> {
   const { error } = await supabase.from('missing_reports')
@@ -586,6 +637,24 @@ export async function uploadSightingImages(userId: string, sightingId: string, l
 - [ ] **Step 1: RPC 작성** — `supabase/migrations/0009_sighting_points.sql`:
 
 ```sql
+-- report detail with last-seen lat/lng decomposed (visibility: owner OR active), + dog as jsonb
+create or replace function public.report_detail(p_id uuid)
+returns table (
+  id uuid, owner_id uuid, dog_id uuid, status text,
+  last_seen_at timestamptz, alert_radius_m int, note text,
+  expires_at timestamptz, created_at timestamptz, updated_at timestamptz, resolved_at timestamptz,
+  last_seen_lat double precision, last_seen_lng double precision, dog jsonb
+)
+language sql security definer set search_path = public as $$
+  select r.id, r.owner_id, r.dog_id, r.status,
+         r.last_seen_at, r.alert_radius_m, r.note,
+         r.expires_at, r.created_at, r.updated_at, r.resolved_at,
+         st_y(r.last_seen_point::geometry), st_x(r.last_seen_point::geometry),
+         jsonb_build_object('name', d.name, 'breed', d.breed, 'features', d.features)
+  from public.missing_reports r join public.dogs d on d.id = r.dog_id
+  where r.id = p_id and (r.owner_id = auth.uid() or r.status = 'active');
+$$;
+
 create or replace function public.report_sightings(p_report_id uuid)
 returns table (id uuid, report_id uuid, reporter_id uuid, seen_at timestamptz, note text, created_at timestamptz, lat double precision, lng double precision)
 language sql security definer set search_path = public as $$
@@ -746,7 +815,9 @@ Deno.serve(async (req) => {
       if (fr.ok) results.push({ user_id: r.user_id, token: r.token, ok: true });
       else {
         const err = await fr.json().catch(() => ({}));
-        results.push({ user_id: r.user_id, token: r.token, ok: false, errorCode: err?.error?.status });
+        // FCM v1 puts UNREGISTERED in error.details[].errorCode (not error.status)
+        const code = (err?.error?.details ?? []).find((d: any) => d?.errorCode)?.errorCode ?? err?.error?.status;
+        results.push({ user_id: r.user_id, token: r.token, ok: false, errorCode: code });
       }
     }
 
@@ -836,7 +907,7 @@ export default function NewReport() {
 
   async function submit() {
     const lastSeenAt = new Date().toISOString();
-    const v = validateReportForm({ dogId, radiusM: radius, lastSeenAt });
+    const v = validateReportForm({ dogId, radiusM: radius, lastSeenAt, lat: coord.lat, lng: coord.lng });
     if (!v.valid) return Alert.alert('확인', v.errors.join('\n'));
     try {
       setBusy(true);
@@ -903,14 +974,15 @@ const styles = StyleSheet.create({
 ```tsx
 import { useEffect, useState } from 'react';
 import { View, Text, Pressable, Image, Alert, StyleSheet } from 'react-native';
+import MapView, { Marker } from 'react-native-maps';
 import { router, useLocalSearchParams } from 'expo-router';
 import { getReport } from '../../../../src/services/missingReports';
-import { MissingReportWithDog } from '../../../../src/types/db';
+import { ReportDetail as ReportDetailDto } from '../../../../src/types/db'; // aliased: component below is also named ReportDetail
 import { supabase } from '../../../../src/lib/supabase';
 
 export default function ReportDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [report, setReport] = useState<MissingReportWithDog | null>(null);
+  const [report, setReport] = useState<ReportDetailDto | null>(null);
   const [photo, setPhoto] = useState<string | null>(null);
 
   useEffect(() => {
@@ -933,6 +1005,11 @@ export default function ReportDetail() {
       <Text style={styles.meta}>{[d?.breed, d?.features].filter(Boolean).join(' · ')}</Text>
       <View style={styles.box}><Text style={styles.boxText}>📍 마지막 목격: {new Date(report.last_seen_at).toLocaleString('ko-KR')}</Text>
         {report.note ? <Text style={styles.boxText}>{report.note}</Text> : null}</View>
+      <View style={styles.miniMap}>
+        <MapView style={{ flex: 1 }} region={{ latitude: report.last_seen_lat, longitude: report.last_seen_lng, latitudeDelta: 0.01, longitudeDelta: 0.01 }}>
+          <Marker coordinate={{ latitude: report.last_seen_lat, longitude: report.last_seen_lng }} title="마지막 목격" pinColor="#ef4444" />
+        </MapView>
+      </View>
       <Pressable style={styles.cta} onPress={() => router.push(`/(app)/report/${id}/sighting`)}>
         <Text style={styles.ctaText}>👀 목격했어요 제보하기</Text>
       </Pressable>
@@ -948,6 +1025,7 @@ const styles = StyleSheet.create({
   meta: { color: '#64748b', marginTop: 4 },
   box: { backgroundColor: '#f1f5f9', borderRadius: 10, padding: 12, marginTop: 14, gap: 4 },
   boxText: { color: '#475569', fontSize: 13 },
+  miniMap: { height: 140, borderRadius: 12, overflow: 'hidden', marginTop: 12 },
   cta: { backgroundColor: '#7c3aed', padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 'auto' },
   ctaText: { color: '#fff', fontWeight: '700', fontSize: 16 },
 });
@@ -1053,11 +1131,11 @@ import MapView, { Marker } from 'react-native-maps';
 import { useLocalSearchParams } from 'expo-router';
 import { getReport } from '../../../../src/services/missingReports';
 import { listSightingsForReport } from '../../../../src/services/sightings';
-import { MissingReportWithDog, Sighting } from '../../../../src/types/db';
+import { ReportDetail, Sighting } from '../../../../src/types/db';
 
 export default function TrackMap() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [report, setReport] = useState<MissingReportWithDog | null>(null);
+  const [report, setReport] = useState<ReportDetail | null>(null);
   const [sightings, setSightings] = useState<Sighting[]>([]);
 
   useEffect(() => {
@@ -1065,11 +1143,14 @@ export default function TrackMap() {
     listSightingsForReport(id).then(setSightings).catch((e) => Alert.alert('오류', e.message));
   }, [id]);
 
-  const center = sightings.length ? { lat: sightings[sightings.length - 1].lat, lng: sightings[sightings.length - 1].lng } : { lat: 37.6542, lng: 127.0568 };
+  const center = sightings.length
+    ? { lat: sightings[sightings.length - 1].lat, lng: sightings[sightings.length - 1].lng }
+    : report ? { lat: report.last_seen_lat, lng: report.last_seen_lng } : { lat: 37.6542, lng: 127.0568 };
   return (
     <View style={styles.c}>
       <View style={styles.map}>
         <MapView style={{ flex: 1 }} region={{ latitude: center.lat, longitude: center.lng, latitudeDelta: 0.02, longitudeDelta: 0.02 }}>
+          {report && <Marker coordinate={{ latitude: report.last_seen_lat, longitude: report.last_seen_lng }} title="마지막 목격" pinColor="#ef4444" />}
           {sightings.map((s, i) => (
             <Marker key={s.id} coordinate={{ latitude: s.lat, longitude: s.lng }} title={`제보 ${i + 1}`} description={new Date(s.seen_at).toLocaleString('ko-KR')} pinColor="#7c3aed" />
           ))}
@@ -1176,4 +1257,6 @@ Add styles: `reportCta: { backgroundColor: '#ef4444', padding: 16, borderRadius:
 
 **3. Type consistency:** `MissingReport`/`MissingReportWithDog`(dog 조인)·`Sighting`(lat/lng 포함, report_sightings RPC가 채움)·`ReportStatus`·`createReport`/`createSighting`(WKT `SRID=4326;POINT(lng lat)`)·`countUsersNear(lat,lng,radiusM)`→rpc `count_users_near{lat,lng,radius_m}`·`tokens_near_report{p_report_id}`·Edge `buildLogRows/invalidTokensFrom/buildFcmMessage` — 태스크 간 일치.
 
-> **알려진 한계/리스크:** ① Edge Function의 FCM 실발송·Webhook은 실기기+클라우드에서만 검증(T15). ② geography 좌표 직렬화는 `report_sightings` RPC로 우회(T7) — 신고 상세의 마지막 위치 지도도 필요 시 같은 패턴. ③ JWT 서명(서비스계정) 코드는 Deno crypto.subtle 기반 — 실배포 전 토큰 발급을 한 번 검증할 것. ④ WKT 문자열 주입은 좌표가 숫자임을 검증(validation)으로 보장.
+> **알려진 한계/리스크:** ① Edge Function의 FCM 실발송·Webhook은 실기기+클라우드에서만 검증(T15). ② geography 좌표 직렬화는 `report_sightings` RPC로 우회(T7) — 신고 상세의 마지막 위치 지도도 필요 시 같은 패턴. ③ JWT 서명(서비스계정) 코드는 Deno crypto.subtle 기반 — 실배포 전 토큰 발급을 한 번 검증할 것. ④ WKT 문자열 주입은 좌표 finite/range 검증(`isValidCoord`)으로 보장.
+
+**Codex 교차 리뷰(2026-06-02) 반영:** ① 활성 신고/연결 dog 읽기를 `TO authenticated`로 제한(익명 노출 차단) ② 신고 INSERT/UPDATE에 dog 소유권 with-check 추가 ③ `tokens_near_report` EXECUTE를 service_role로만 제한(토큰 하베스팅 차단) ④ dog-images Storage에 활성-신고 읽기 정책 추가(이웃이 사진 보임) ⑤ `report_detail` RPC로 마지막 목격 좌표 제공 + 상세/추적 지도에 ★마커 ⑥ `alert_radius_m` DB CHECK(300~10000) ⑦ 통합 테스트에 owner/far 위치·토큰 부여(배제 실검증) + 익명거부·타인dog신고·tokens_near_report 클라이언트거부 테스트 추가 ⑧ FCM 무효토큰 파싱을 `error.details[].errorCode`로 수정 ⑨ 좌표 finite/range 검증.
