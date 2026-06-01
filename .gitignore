@@ -1,0 +1,24 @@
+# Superpowers brainstorm sessions (local visual companion artifacts)
+.superpowers/
+
+# Node / RN / Expo
+node_modules/
+.expo/
+dist/
+*.log
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# macOS
+.DS_Store
+
+# Native build output
+ios/build/
+android/build/
+android/app/build/
