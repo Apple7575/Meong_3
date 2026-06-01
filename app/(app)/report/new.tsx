@@ -23,7 +23,13 @@ export default function NewReport() {
       if (p.granted) { const pos = await Location.getCurrentPositionAsync({}); setCoord({ lat: pos.coords.latitude, lng: pos.coords.longitude }); }
     });
   }, []);
-  useEffect(() => { countUsersNear(coord.lat, coord.lng, radius).then(setReach).catch(() => setReach(null)); }, [coord, radius]);
+  useEffect(() => {
+    let cancelled = false; // ignore out-of-order responses so stale reach can't overwrite the latest
+    countUsersNear(coord.lat, coord.lng, radius)
+      .then((n) => { if (!cancelled) setReach(n); })
+      .catch(() => { if (!cancelled) setReach(null); });
+    return () => { cancelled = true; };
+  }, [coord, radius]);
 
   async function submit() {
     const lastSeenAt = new Date().toISOString();

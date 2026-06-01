@@ -29,14 +29,31 @@ export default function SightingForm() {
     const seenAt = new Date().toISOString();
     const v = validateSightingForm({ seenAt, lat: coord.lat, lng: coord.lng });
     if (!v.valid) return Alert.alert('확인', v.errors.join('\n'));
+    setBusy(true);
+    let sid: string;
     try {
-      setBusy(true);
-      const sid = await createSighting({ reportId: id, lat: coord.lat, lng: coord.lng, seenAt, note: note || undefined });
-      if (uris.length) { const { data } = await supabase.auth.getUser(); const u = data.user?.id; if (!u) throw new Error('세션 만료'); await uploadSightingImages(u, sid, uris); }
-      Alert.alert('제보 완료', '소중한 제보 감사합니다!');
-      router.back();
-    } catch (e: any) { Alert.alert('제보 실패', e.message); }
-    finally { setBusy(false); }
+      sid = await createSighting({ reportId: id, lat: coord.lat, lng: coord.lng, seenAt, note: note || undefined });
+    } catch (e: any) {
+      setBusy(false);
+      return Alert.alert('제보 실패', e.message); // nothing saved yet → safe to retry
+    }
+    // The sighting is saved. A photo-upload failure is PARTIAL — do not surface it as a full failure,
+    // or the user resubmits and creates a duplicate sighting.
+    if (uris.length) {
+      try {
+        const { data } = await supabase.auth.getUser();
+        const u = data.user?.id;
+        if (!u) throw new Error('세션 만료');
+        await uploadSightingImages(u, sid, uris);
+      } catch (e: any) {
+        setBusy(false);
+        Alert.alert('제보 저장됨', `제보는 등록됐어요. 다만 사진 첨부에 실패했습니다: ${e.message}`);
+        return router.back();
+      }
+    }
+    setBusy(false);
+    Alert.alert('제보 완료', '소중한 제보 감사합니다!');
+    router.back();
   }
 
   return (

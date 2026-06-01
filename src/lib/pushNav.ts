@@ -12,7 +12,8 @@ function routeFromData(data?: Record<string, string | object>) {
 export function usePushNavigation() {
   useEffect(() => {
     const unsub = messaging().onNotificationOpenedApp((m) => routeFromData(m?.data));
-    messaging().getInitialNotification().then((m) => { if (m) routeFromData(m.data); });
+    // defer the cold-start route until after the root layout has mounted (avoids "navigate before mounting Root")
+    messaging().getInitialNotification().then((m) => { if (m) setTimeout(() => routeFromData(m.data), 0); });
     return unsub;
   }, []);
 }
