@@ -11,26 +11,27 @@ export default function ChatThread() {
   const [text, setText] = useState('');
   const [me, setMe] = useState<string | null>(null);
   const [other, setOther] = useState<string>('대화');
-  const [closed, setClosed] = useState(false);
+  const [closed, setClosed] = useState(true); // safe default: read-only until metadata confirms the report is active
   const [busy, setBusy] = useState(false);
   const listRef = useRef<FlatList<Message>>(null);
 
   useEffect(() => { supabase.auth.getUser().then(({ data }) => setMe(data.user?.id ?? null)); }, []);
   useEffect(() => {
+    // keep read-only on metadata failure (don't silently allow sends)
     myChats().then((rows) => { const c = rows.find((r) => r.chat_id === id); if (c) { setOther(c.other_nickname ?? '대화'); setClosed(c.report_status !== 'active'); } }).catch(() => {});
-    // subscribe FIRST so a message arriving during the initial history fetch isn't dropped
     const add = (m: Message) => setMessages((prev) => {
       const byId = new Map(prev.map((x) => [x.id, x])); byId.set(m.id, m);
       return Array.from(byId.values()).sort((a, b) => a.created_at.localeCompare(b.created_at));
     });
-    const unsub = subscribeToChat(id, add);
-    // then load history and MERGE (union by id) with anything realtime already delivered
-    listMessages(id)
-      .then((hist) => setMessages((prev) => {
-        const byId = new Map(prev.map((m) => [m.id, m])); for (const m of hist) byId.set(m.id, m);
-        return Array.from(byId.values()).sort((a, b) => a.created_at.localeCompare(b.created_at));
-      }))
-      .catch((e) => Alert.alert('오류', e.message));
+    // load history ONLY after the realtime channel is SUBSCRIBED → no message can slip through the setup gap
+    const unsub = subscribeToChat(id, add, () => {
+      listMessages(id)
+        .then((hist) => setMessages((prev) => {
+          const byId = new Map(prev.map((m) => [m.id, m])); for (const m of hist) byId.set(m.id, m);
+          return Array.from(byId.values()).sort((a, b) => a.created_at.localeCompare(b.created_at));
+        }))
+        .catch((e) => Alert.alert('오류', e.message));
+    });
     return unsub;
   }, [id]);
 

@@ -29,11 +29,12 @@ export async function sendMessage(chatId: string, raw: string): Promise<void> {
   const { error } = await supabase.from('messages').insert({ chat_id: chatId, sender_id, body: cleanMessageBody(raw) });
   if (error) throw new Error(error.message);
 }
-export function subscribeToChat(chatId: string, onInsert: (m: Message) => void): () => void {
+export function subscribeToChat(chatId: string, onInsert: (m: Message) => void, onReady?: () => void): () => void {
   const channel = supabase
     .channel(`chat:${chatId}`)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
       (payload: { new: Message }) => onInsert(payload.new))
-    .subscribe();
+    // load history only AFTER the channel is live, so a message inserted during setup isn't missed
+    .subscribe((status: string) => { if (status === 'SUBSCRIBED') onReady?.(); });
   return () => { supabase.removeChannel(channel); };
 }
