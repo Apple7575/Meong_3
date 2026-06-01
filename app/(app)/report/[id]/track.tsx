@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { View, Text, FlatList, Alert, StyleSheet } from 'react-native';
+import { View, Text, FlatList, Alert, StyleSheet, Pressable } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { getReport } from '../../../../src/services/missingReports';
+import { getOrCreateChat } from '../../../../src/services/chats';
 import { listSightingsForReport } from '../../../../src/services/sightings';
 import { ReportDetail, Sighting } from '../../../../src/types/db';
 
@@ -34,7 +35,14 @@ export default function TrackMap() {
         ListEmptyComponent={<Text style={styles.empty}>아직 제보가 없어요. 알림을 받은 이웃의 제보를 기다리는 중이에요.</Text>}
         renderItem={({ item, index }) => (
           <View style={styles.row}><Text style={styles.rowMain}>{index + 1}. {item.note || '목격 제보'}</Text>
-            <Text style={styles.rowSub}>{new Date(item.seen_at).toLocaleString('ko-KR')}</Text></View>
+            <Text style={styles.rowSub}>{new Date(item.seen_at).toLocaleString('ko-KR')}</Text>
+            <Pressable onPress={async () => {
+              try { const cid = await getOrCreateChat(item.report_id, item.reporter_id); router.push(`/(app)/chat/${cid}`); }
+              catch (e: any) { Alert.alert('오류', e.message); }
+            }}>
+              <Text style={{ color: '#7c3aed', fontWeight: '700', marginTop: 4 }}>💬 제보자와 대화</Text>
+            </Pressable>
+          </View>
         )} />
     </View>
   );

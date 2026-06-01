@@ -35,3 +35,8 @@ export type Sighting = {
   seen_at: string; note: string | null; created_at: string;
   lat: number; lng: number; // resolved client-side from geometry via RPC/select
 };
+export type Message = { id: string; chat_id: string; sender_id: string; body: string; created_at: string };
+export type ChatListItem = {
+  chat_id: string; report_id: string; other_nickname: string | null; dog_name: string | null;
+  report_status: ReportStatus; last_message_at: string; last_body: string | null;
+};

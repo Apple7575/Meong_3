@@ -3,6 +3,7 @@ import { View, Text, Pressable, Image, Alert, StyleSheet } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 import { router, useLocalSearchParams } from 'expo-router';
 import { getReport } from '../../../../src/services/missingReports';
+import { getOrCreateChat } from '../../../../src/services/chats';
 import { ReportDetail as ReportDetailDto } from '../../../../src/types/db'; // aliased: component below is also named ReportDetail
 import { supabase } from '../../../../src/lib/supabase';
 
@@ -10,6 +11,7 @@ export default function ReportDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [report, setReport] = useState<ReportDetailDto | null>(null);
   const [photo, setPhoto] = useState<string | null>(null);
+  const [canChat, setCanChat] = useState(false);
 
   useEffect(() => {
     getReport(id).then(async (r) => {
@@ -20,6 +22,14 @@ export default function ReportDetail() {
         setPhoto(data?.signedUrl ?? null);
       }
     }).catch((e) => Alert.alert('오류', e.message));
+  }, [id]);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(async ({ data }) => {
+      const me = data.user?.id; if (!me) return;
+      const s = await supabase.from('sightings').select('id').eq('report_id', id).eq('reporter_id', me).limit(1);
+      setCanChat((s.data?.length ?? 0) > 0);
+    });
   }, [id]);
 
   if (!report) return <View style={styles.c}><Text>불러오는 중...</Text></View>;
@@ -36,6 +46,14 @@ export default function ReportDetail() {
           <Marker coordinate={{ latitude: report.last_seen_lat, longitude: report.last_seen_lng }} title="마지막 목격" pinColor="#ef4444" />
         </MapView>
       </View>
+      {canChat && (
+        <Pressable style={[styles.cta, { backgroundColor: '#16a34a', marginBottom: 8 }]} onPress={async () => {
+          try { const { data } = await supabase.auth.getUser(); const cid = await getOrCreateChat(id, data.user!.id); router.push(`/(app)/chat/${cid}`); }
+          catch (e: any) { Alert.alert('오류', e.message); }
+        }}>
+          <Text style={styles.ctaText}>💬 보호자와 대화</Text>
+        </Pressable>
+      )}
       <Pressable style={styles.cta} onPress={() => router.push(`/(app)/report/${id}/sighting`)}>
         <Text style={styles.ctaText}>👀 목격했어요 제보하기</Text>
       </Pressable>

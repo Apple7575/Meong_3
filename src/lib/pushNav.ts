@@ -3,9 +3,10 @@ import { router } from 'expo-router';
 import messaging from '@react-native-firebase/messaging';
 
 function routeFromData(data?: Record<string, string | object>) {
-  if (data && (data as any).type === 'missing_report' && (data as any).report_id) {
-    router.push(`/(app)/report/${(data as any).report_id}`);
-  }
+  const d = data as any;
+  if (!d) return;
+  if (d.type === 'missing_report' && d.report_id) router.push(`/(app)/report/${d.report_id}`);
+  else if (d.type === 'chat_message' && d.chat_id) router.push(`/(app)/chat/${d.chat_id}`);
 }
 
 /** 알림 탭으로 앱이 열렸을 때(백그라운드/종료) 신고 상세로 딥링크. 앱 엔트리에서 1회 설치. */
