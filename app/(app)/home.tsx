@@ -46,6 +46,12 @@ export default function Home() {
       <Pressable style={styles.walkHist} onPress={() => router.push('/(app)/walk/history')}>
         <Text style={styles.walkHistText}>산책 기록 보기</Text>
       </Pressable>
+      <Pressable style={styles.reportCta} onPress={() => router.push('/(app)/report/new')}>
+        <Text style={styles.reportCtaText}>🚨 실종 신고</Text>
+      </Pressable>
+      <Pressable style={styles.walkHist} onPress={() => router.push('/(app)/reports')}>
+        <Text style={styles.walkHistText}>내 실종 신고</Text>
+      </Pressable>
       <Pressable onPress={async () => { try { await signOut(); } catch { /* 이미 화면을 떠나는 중 */ } }}><Text style={styles.signout}>로그아웃</Text></Pressable>
     </View>
   );
@@ -61,4 +67,5 @@ const styles = StyleSheet.create({
   walkCta: { backgroundColor: '#16a34a', padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 12 },
   walkCtaText: { color: '#fff', fontWeight: '700', fontSize: 16 },
   walkHist: { padding: 12, alignItems: 'center' }, walkHistText: { color: '#7c3aed', fontWeight: '700' },
+  reportCta: { backgroundColor: '#ef4444', padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 12 }, reportCtaText: { color: '#fff', fontWeight: '700', fontSize: 16 },
 });

@@ -4,5 +4,5 @@ module.exports = {
   transformIgnorePatterns: [
     'node_modules/(?!((jest-)?react-native|@react-native(-community)?|expo(nent)?|@expo(nent)?/.*|@react-navigation/.*|@supabase/.*))',
   ],
-  testPathIgnorePatterns: ['/node_modules/', '/supabase/tests/'],
+  testPathIgnorePatterns: ['/node_modules/', '/supabase/tests/', '/supabase/functions/'],
 };
