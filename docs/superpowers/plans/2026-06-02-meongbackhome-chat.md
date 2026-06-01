@@ -117,6 +117,7 @@ declare v_owner uuid; v_chat uuid;
 begin
   select owner_id into v_owner from public.missing_reports where id = p_report_id;
   if v_owner is null then raise exception 'report not found'; end if;
+  if p_reporter_id = v_owner then raise exception 'cannot chat with the report owner (self)'; end if;
 
   if auth.uid() = v_owner then
     if not exists (select 1 from public.sightings s where s.report_id = p_report_id and s.reporter_id = p_reporter_id) then
@@ -153,6 +154,12 @@ language sql security definer set search_path = public as $$
   where auth.uid() in (c.owner_id, c.reporter_id)
   order by c.last_message_at desc;
 $$;
+
+-- These RPCs validate via auth.uid() internally; lock EXECUTE to authenticated (consistent with 0008).
+revoke execute on function public.get_or_create_chat(uuid, uuid) from public, anon;
+grant execute on function public.get_or_create_chat(uuid, uuid) to authenticated;
+revoke execute on function public.my_chats() from public, anon;
+grant execute on function public.my_chats() to authenticated;
 ```
 
 - [ ] **Step 2: 적용** — `npx supabase migration up`.
@@ -222,7 +229,8 @@ describe('chat RLS + RPC + closed', () => {
   });
 
   test('participants send + read; stranger denied; trigger bumps last_message_at', async () => {
-    const before = (await admin.from('chats').select('last_message_at').eq('id', chatId).single()).data as any;
+    // controlled OLD timestamp so the trigger bump is observable as a STRICT increase (not a trivial >=)
+    await admin.from('chats').update({ last_message_at: '2000-01-01T00:00:00Z' }).eq('id', chatId);
     const ins = await reporter.client.from('messages').insert({ chat_id: chatId, sender_id: reporter.id, body: '봤어요!' });
     expect(ins.error).toBeNull();
     const ownerRead = await owner.client.from('messages').select('body').eq('chat_id', chatId);
@@ -230,7 +238,7 @@ describe('chat RLS + RPC + closed', () => {
     const strangerRead = await stranger.client.from('messages').select('*').eq('chat_id', chatId);
     expect(strangerRead.data ?? []).toEqual([]);
     const after = (await admin.from('chats').select('last_message_at').eq('id', chatId).single()).data as any;
-    expect(new Date(after.last_message_at).getTime()).toBeGreaterThanOrEqual(new Date(before.last_message_at).getTime());
+    expect(new Date(after.last_message_at).getTime()).toBeGreaterThan(new Date('2000-01-01T00:00:00Z').getTime());
   });
 
   test('stranger cannot send into a chat they are not in', async () => {
@@ -240,11 +248,25 @@ describe('chat RLS + RPC + closed', () => {
 
   test('closed (resolved) report blocks new messages but allows reading', async () => {
     await owner.client.from('missing_reports').update({ status: 'resolved' }).eq('id', reportId);
-    const ins = await reporter.client.from('messages').insert({ chat_id: chatId, sender_id: reporter.id, body: 'late' });
-    expect(ins.error).not.toBeNull(); // closed
-    const read = await reporter.client.from('messages').select('body').eq('chat_id', chatId);
-    expect((read.data ?? []).length).toBeGreaterThan(0); // history still readable
-    await owner.client.from('missing_reports').update({ status: 'active' }).eq('id', reportId); // restore
+    try {
+      const ins = await reporter.client.from('messages').insert({ chat_id: chatId, sender_id: reporter.id, body: 'late' });
+      expect(ins.error).not.toBeNull(); // closed
+      const read = await reporter.client.from('messages').select('body').eq('chat_id', chatId);
+      expect((read.data ?? []).length).toBeGreaterThan(0); // history still readable
+    } finally {
+      await owner.client.from('missing_reports').update({ status: 'active' }).eq('id', reportId); // restore even if asserts fail
+    }
+  });
+
+  test('owner cannot open a self-chat (reporter = owner)', async () => {
+    const r = await owner.client.rpc('get_or_create_chat', { p_report_id: reportId, p_reporter_id: owner.id });
+    expect(r.error).not.toBeNull();
+  });
+
+  test('anonymous cannot call chat RPCs (execute revoked)', async () => {
+    const anon = createClient(URL, ANON, { auth: { persistSession: false } });
+    expect((await anon.rpc('my_chats')).error).not.toBeNull();
+    expect((await anon.rpc('get_or_create_chat', { p_report_id: reportId, p_reporter_id: reporter.id })).error).not.toBeNull();
   });
 
   test('my_chats returns the other participant nickname (no phone)', async () => {
@@ -448,6 +470,13 @@ export function invalidTokensFrom(results: SendResult[]): string[] {
   return results.filter((r) => !r.ok && r.errorCode && CLEANUP_CODES.has(r.errorCode)).map((r) => r.token);
 }
 
+/** The chat participant who is NOT the sender. null if the sender isn't a participant. */
+export function recipientOf(chat: { owner_id: string; reporter_id: string }, senderId: string): string | null {
+  if (senderId === chat.owner_id) return chat.reporter_id;
+  if (senderId === chat.reporter_id) return chat.owner_id;
+  return null;
+}
+
 export async function getAccessToken(saJson: string): Promise<{ token: string; projectId: string }> {
   const sa = JSON.parse(saJson);
   const now = Math.floor(Date.now() / 1000);
@@ -490,7 +519,10 @@ export async function dispatchPush(
       if (fr.ok) results.push({ user_id: r.user_id, token: r.token, ok: true });
       else {
         const err = await fr.json().catch(() => ({}));
-        const fcmErrorCode = (err?.error?.details ?? []).find((d: any) => typeof d?.errorCode === 'string')?.errorCode;
+        // only a genuine FcmError detail drives token cleanup (not request-level errors)
+        const fcmErrorCode = (err?.error?.details ?? []).find(
+          (d: any) => typeof d?.['@type'] === 'string' && d['@type'].includes('FcmError') && typeof d?.errorCode === 'string',
+        )?.errorCode;
         results.push({ user_id: r.user_id, token: r.token, ok: false, errorCode: fcmErrorCode });
       }
     } catch (_e) {
@@ -510,7 +542,7 @@ export async function dispatchPush(
 
 ```ts
 import { assertEquals } from 'https://deno.land/std@0.224.0/assert/mod.ts';
-import { buildLogRows, invalidTokensFrom } from './fcm.ts';
+import { buildLogRows, invalidTokensFrom, recipientOf } from './fcm.ts';
 
 Deno.test('buildLogRows maps send results to log rows', () => {
   assertEquals(buildLogRows('r1', [{ user_id: 'u1', token: 't1', ok: true }, { user_id: 'u2', token: 't2', ok: false }]), [
@@ -524,6 +556,12 @@ Deno.test('invalidTokensFrom cleans only FcmError codes, ignores request-level e
     { user_id: 'u2', token: 't2', ok: false, errorCode: 'UNREGISTERED' },
     { user_id: 'u3', token: 't3', ok: false, errorCode: 'INTERNAL' },
   ]), ['t2']);
+});
+Deno.test('recipientOf returns the non-sender participant, null for a non-participant', () => {
+  const chat = { owner_id: 'o', reporter_id: 'r' };
+  assertEquals(recipientOf(chat, 'o'), 'r');
+  assertEquals(recipientOf(chat, 'r'), 'o');
+  assertEquals(recipientOf(chat, 'x'), null);
 });
 ```
 
@@ -566,7 +604,7 @@ Deno.serve(async (req) => {
 - [ ] **Step 1: 작성**
 
 ```ts
-import { adminClient, dispatchPush } from '../_shared/fcm.ts';
+import { adminClient, dispatchPush, recipientOf } from '../_shared/fcm.ts';
 
 Deno.serve(async (req) => {
   try {
@@ -574,10 +612,12 @@ Deno.serve(async (req) => {
     const msg = payload.record; // { id, chat_id, sender_id, body }
     if (!msg?.chat_id) return new Response('no message', { status: 400 });
     const supabase = adminClient();
-    const { data: chat } = await supabase.from('chats').select('owner_id, reporter_id, report_id').eq('id', msg.chat_id).single();
-    if (!chat) return new Response('no chat', { status: 404 });
-    const recipientId = msg.sender_id === (chat as any).owner_id ? (chat as any).reporter_id : (chat as any).owner_id;
-    const { data: tokens } = await supabase.from('fcm_tokens').select('user_id, token').eq('user_id', recipientId);
+    const { data: chat, error: chatErr } = await supabase.from('chats').select('owner_id, reporter_id, report_id').eq('id', msg.chat_id).single();
+    if (chatErr || !chat) return new Response('no chat', { status: 404 });
+    const recipientId = recipientOf(chat as any, msg.sender_id);
+    if (!recipientId) return new Response('sender not a participant', { status: 400 });
+    const { data: tokens, error: tokErr } = await supabase.from('fcm_tokens').select('user_id, token').eq('user_id', recipientId);
+    if (tokErr) return new Response(tokErr.message, { status: 500 });
     const summary = await dispatchPush(supabase, {
       reportId: (chat as any).report_id,
       recipients: (tokens ?? []) as { user_id: string; token: string }[],
@@ -641,8 +681,19 @@ export default function ChatThread() {
   useEffect(() => { supabase.auth.getUser().then(({ data }) => setMe(data.user?.id ?? null)); }, []);
   useEffect(() => {
     myChats().then((rows) => { const c = rows.find((r) => r.chat_id === id); if (c) { setOther(c.other_nickname ?? '대화'); setClosed(c.report_status !== 'active'); } }).catch(() => {});
-    listMessages(id).then(setMessages).catch((e) => Alert.alert('오류', e.message));
-    const unsub = subscribeToChat(id, (m) => setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m])));
+    // subscribe FIRST so a message arriving during the initial history fetch isn't dropped
+    const add = (m: Message) => setMessages((prev) => {
+      const byId = new Map(prev.map((x) => [x.id, x])); byId.set(m.id, m);
+      return Array.from(byId.values()).sort((a, b) => a.created_at.localeCompare(b.created_at));
+    });
+    const unsub = subscribeToChat(id, add);
+    // then load history and MERGE (union by id) with anything realtime already delivered
+    listMessages(id)
+      .then((hist) => setMessages((prev) => {
+        const byId = new Map(prev.map((m) => [m.id, m])); for (const m of hist) byId.set(m.id, m);
+        return Array.from(byId.values()).sort((a, b) => a.created_at.localeCompare(b.created_at));
+      }))
+      .catch((e) => Alert.alert('오류', e.message));
     return unsub;
   }, [id]);
 
@@ -750,7 +801,7 @@ const styles = StyleSheet.create({
               <Text style={{ color: '#7c3aed', fontWeight: '700', marginTop: 4 }}>💬 제보자와 대화</Text>
             </Pressable>
 ```
-(`Sighting` already has `report_id` and `reporter_id`; `router`/`Alert` are already imported in track.tsx.)
+`Sighting` already has `report_id` and `reporter_id`. **track.tsx currently imports only `Alert` from react-native and `useLocalSearchParams` from expo-router** — you MUST also add `Pressable` to the `react-native` import and `router` to the `expo-router` import, or this won't compile. After editing, run `npx tsc --noEmit`.
 
 - [ ] **Step 2: 신고 상세(제보자) — "보호자와 대화"** — in `app/(app)/report/[id]/index.tsx`, after load, check whether the current user has a sighting on this report; if so show a 대화 button. Add imports: `import { getOrCreateChat } from '../../../../src/services/chats';`. Add state + check:
 
@@ -815,3 +866,5 @@ Add a button above the existing "목격했어요" CTA (only when canChat):
 **3. Type consistency:** `Message`(chat_id/sender_id/body), `ChatListItem`(chat_id/other_nickname/report_status/last_message_at/last_body), `getOrCreateChat(reportId,reporterId)`→rpc `{p_report_id,p_reporter_id}`, `myChats()`→rpc `my_chats`, `sendMessage(chatId,raw)` trims, `subscribeToChat(chatId,onInsert)` filter `chat_id=eq.{id}`, Edge `dispatchPush(supabase,{reportId,recipients,notification,data})`·`adminClient()` — 태스크 간 일치. notify-nearby 리팩터가 dispatchPush 시그니처와 일치.
 
 > **알려진 한계/리스크:** ① Realtime 실수신·Webhook·FCM 발송은 실기기+클라우드 검증(T12). 통합 테스트는 DB 레벨(RLS/RPC/트리거)만. ② `_shared/fcm.ts` 추출은 SP3a 머지 코드를 리팩터 — notify-nearby의 동작/테스트가 유지되는지 T6에서 확인. ③ 메시지 페이지네이션 없음(초기 전체 로드) — 긴 대화는 후속. ④ 차단/신고는 SP3c 모더레이션과 함께(이번 범위 아님).
+
+**Codex 교차 리뷰(2026-06-02) 반영:** ① 두 RPC EXECUTE를 authenticated로 잠금(public/anon revoke) ② track.tsx에 Pressable/router import 추가 명시(미추가 시 컴파일 실패) ③ 스레드 화면 race 수정(subscribe 먼저 → history 병합, id 유니온) ④ FCM 무효토큰 정리를 `@type FcmError` detail로 한정 ⑤ `recipientOf` 순수 함수 추출 + Deno 테스트 + notify-message가 사용(비참여자 sender 거부·에러 체크) ⑥ 트리거 테스트를 통제된 과거 시각 기준 strict 증가로 ⑦ closed 테스트 try/finally 복구 ⑧ self-chat 금지(reporter=owner raise) + 익명 RPC 거부 테스트 추가.
