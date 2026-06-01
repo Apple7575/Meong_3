@@ -1,7 +1,7 @@
 {
   "name": "meongbackhome",
   "version": "0.1.0",
-  "main": "index.ts",
+  "main": "expo-router/entry",
   "dependencies": {
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-native-firebase/app": "^24.0.0",
