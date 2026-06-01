@@ -7,7 +7,7 @@ const config: ExpoConfig = {
   version: '0.1.0',
   orientation: 'portrait',
   ios: { bundleIdentifier: 'com.meongbackhome.app', supportsTablet: false, infoPlist: { UIBackgroundModes: ['location'] } },
-  android: { package: 'com.meongbackhome.app' },
+  android: { package: 'com.meongbackhome.app', config: { googleMaps: { apiKey: process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY } } },
   plugins: [
     'expo-router',
     'expo-secure-store',
@@ -29,6 +29,7 @@ const config: ExpoConfig = {
     supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL,
     supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
     kakaoNativeAppKey: process.env.EXPO_PUBLIC_KAKAO_NATIVE_APP_KEY,
+    googleMapsAndroidKey: process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY,
   },
 };
 export default config;
