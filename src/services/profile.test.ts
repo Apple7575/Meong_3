@@ -8,7 +8,7 @@ const mockFrom = jest.fn(() => ({ select: mockSelect, update: mockUpdate }));
 
 jest.mock('../lib/supabase', () => ({
   supabase: {
-    from: (...a: any[]) => mockFrom(...a),
+    from: (...a: any[]) => (mockFrom as (...args: any[]) => any)(...a),
     auth: { getUser: jest.fn(async () => ({ data: { user: { id: 'u1' } } } )) },
   },
 }));

@@ -9,7 +9,7 @@ const mockSelect = jest.fn(() => ({ eq: mockEq }));
 const mockFrom = jest.fn(() => ({ insert: mockInsert, select: mockSelect }));
 jest.mock('../lib/supabase', () => ({
   supabase: {
-    from: (...a: any[]) => mockFrom(...a),
+    from: (...a: any[]) => (mockFrom as (...args: any[]) => any)(...a),
     auth: { getUser: jest.fn(async () => ({ data: { user: { id: 'u1' } } })) },
   },
 }));
