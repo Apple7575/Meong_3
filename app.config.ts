@@ -6,7 +6,14 @@ const config: ExpoConfig = {
   scheme: 'meongbackhome',
   version: '0.1.0',
   orientation: 'portrait',
-  ios: { bundleIdentifier: 'com.meongbackhome.app', supportsTablet: false, infoPlist: { UIBackgroundModes: ['location'] } },
+  ios: {
+    bundleIdentifier: 'com.meongbackhome.app',
+    supportsTablet: false,
+    // EAS injects GOOGLE_SERVICES_INFO_PLIST (file secret) at build time; local fallback for prebuild.
+    googleServicesFile: process.env.GOOGLE_SERVICES_INFO_PLIST ?? './GoogleService-Info.plist',
+    infoPlist: { UIBackgroundModes: ['location', 'remote-notification'] },
+    entitlements: { 'aps-environment': 'production' },
+  },
   android: {
     package: 'com.meongbackhome.app',
     // EAS injects GOOGLE_SERVICES_JSON (file secret) as a path at build time; falls back to the
