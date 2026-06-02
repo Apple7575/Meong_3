@@ -74,6 +74,13 @@ language sql security definer set search_path = public as $$
 $$;
 revoke execute on function public.active_reports_in_bounds(double precision, double precision, double precision, double precision) from public, anon;
 grant execute on function public.active_reports_in_bounds(double precision, double precision, double precision, double precision) to authenticated;
+
+-- SECURITY (fixes a pre-existing SP3a leak): report_detail (0009) is SECURITY DEFINER and returns
+-- active reports' owner_id + last-seen to ANY caller via the default PUBLIC execute grant — anon can
+-- hit /rpc/report_detail directly. Lock it to authenticated + service_role (the flyer edge function
+-- uses service_role; the in-app report detail uses authenticated).
+revoke execute on function public.report_detail(uuid) from public, anon;
+grant execute on function public.report_detail(uuid) to authenticated, service_role;
 ```
 
 - [ ] **Step 2: 적용 + 클린 재적용** — `npx supabase migration up`; `npx supabase db reset --no-seed` (0001–0012 클린). **주의:** db reset 후 auth 컨테이너가 잠깐 재기동되니, 통합 테스트(Task 3) 전에 `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:54321/auth/v1/health`가 200인지 확인하고, 아니면 몇 초 대기/`npx supabase start`.
@@ -151,6 +158,14 @@ describe('active_reports_in_bounds', () => {
     const { error } = await anon.rpc('active_reports_in_bounds', { min_lng: 0, min_lat: 0, max_lng: 1, max_lat: 1 });
     expect(error).not.toBeNull();
   });
+
+  test('report_detail is locked: anon denied, authenticated still gets active report', async () => {
+    const anon = createClient(URL, ANON, { auth: { persistSession: false } });
+    expect((await anon.rpc('report_detail', { p_id: activeId })).error).not.toBeNull(); // pre-existing leak closed
+    const authed = await viewer.client.rpc('report_detail', { p_id: activeId }).single();
+    expect(authed.error).toBeNull();
+    expect((authed.data as any).id).toBe(activeId);
+  });
 });
 ```
 
@@ -178,16 +193,21 @@ Deno.test('staticMapUrl centers + markers on the point with the key', () => {
   assertStringIncludes(u, 'center=37.65,127.07');
   assertStringIncludes(u, 'key=KEY123');
 });
-Deno.test('renderFlyerHtml escapes content, embeds static map + app deep link, has NO phone', () => {
-  const html = renderFlyerHtml(
-    { dogName: '<b>초코</b>', breed: '말티즈', features: '흰색', lastSeenAt: '2026-06-02T00:00:00Z', lat: 37.65, lng: 127.07, photoUrl: 'https://x/p.jpg' },
-    { staticMapKey: 'KEY', appDeepLink: 'meongbackhome://report/r1' },
-  );
+Deno.test('renderFlyerHtml escapes content, embeds static map + app deep link, leaks no sensitive fields', () => {
+  const input = {
+    dogName: '<b>초코</b>', breed: '말티즈', features: '흰색', lastSeenAt: '2026-06-02T00:00:00Z',
+    lat: 37.65, lng: 127.07, photoUrl: 'https://x/p.jpg',
+    // sensitive fields that must NEVER reach the public page even if mistakenly passed in
+    phone: '01099998888', owner_id: 'OWNER-UUID-XYZ', emergency_contact: '01077776666', owner_phone: '01055554444',
+  } as any;
+  const html = renderFlyerHtml(input, { staticMapKey: 'KEY', appDeepLink: 'meongbackhome://report/r1' });
   assertStringIncludes(html, '&lt;b&gt;초코&lt;/b&gt;');           // escaped, not raw
   assertStringIncludes(html, 'maps.googleapis.com/maps/api/staticmap');
   assertStringIncludes(html, 'meongbackhome://report/r1');
-  // SafeReport has no phone field by design → output cannot contain one
-  assertEquals(/01\d{8,9}/.test(html), false);
+  // renderFlyerHtml only reads SafeReport fields, so extra sensitive props can't leak
+  for (const secret of ['01099998888', 'OWNER-UUID-XYZ', '01077776666', '01055554444']) {
+    assertEquals(html.includes(secret), false);
+  }
 });
 ```
 
@@ -410,14 +430,20 @@ const NOWON = { latitude: 37.6542, longitude: 127.0568, latitudeDelta: 0.05, lon
 export default function NeighborhoodMap() {
   const [reports, setReports] = useState<NeighborhoodReport[]>([]);
   const [recentOnly, setRecentOnly] = useState(false);
-  const [initial, setInitial] = useState<Region>(NOWON);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mapRef = useRef<MapView | null>(null);
 
   useEffect(() => {
     Location.getForegroundPermissionsAsync().then(async (p) => {
-      if (p.granted) { const pos = await Location.getCurrentPositionAsync({}); setInitial({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, latitudeDelta: 0.05, longitudeDelta: 0.05 }); }
+      if (!p.granted) return;
+      const pos = await Location.getCurrentPositionAsync({});
+      const region = { latitude: pos.coords.latitude, longitude: pos.coords.longitude, latitudeDelta: 0.05, longitudeDelta: 0.05 };
+      mapRef.current?.animateToRegion(region, 500); // initialRegion is mount-only; animate to the real location
+      fetchFor(region);
     });
   }, []);
+  // clear the debounce timer on unmount so we don't setReports after leaving
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
   function fetchFor(region: Region) {
     const minLat = region.latitude - region.latitudeDelta / 2;
@@ -430,14 +456,14 @@ export default function NeighborhoodMap() {
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => fetchFor(region), 400); // debounce viewport queries
   }
-  useEffect(() => { fetchFor(initial); }, [initial]);
+  useEffect(() => { fetchFor(NOWON); }, []); // initial load (geolocation effect re-fetches the real region)
 
   const cutoff = Date.now() - 3 * 24 * 3600 * 1000;
   const shown = recentOnly ? reports.filter((r) => Date.parse(r.last_seen_at) >= cutoff) : reports;
 
   return (
     <View style={styles.c}>
-      <MapView style={{ flex: 1 }} initialRegion={initial} onRegionChangeComplete={onRegionChange}>
+      <MapView ref={mapRef} style={{ flex: 1 }} initialRegion={NOWON} onRegionChangeComplete={onRegionChange}>
         {shown.map((r) => (
           <Marker key={r.id} coordinate={{ latitude: r.lat, longitude: r.lng }} title={r.dog_name ?? '실종견'}
             pinColor="#ef4444" onCalloutPress={() => router.push(`/(app)/report/${r.id}`)}
@@ -525,7 +551,7 @@ Render `{isOwner && report && <FlyerShare reportId={id} dogName={report.dog?.nam
 
 > Google Static Maps 키 + 실기기/브라우저 필요.
 
-- [ ] **Step 1: 키/배포** — Google Cloud에서 **Static Maps API** 키 발급(referrer 제한: 함수 도메인). `npx supabase secrets set GOOGLE_STATIC_MAPS_KEY=...`. `npx supabase functions deploy flyer --no-verify-jwt` (공개 페이지라 JWT 미검증).
+- [ ] **Step 1: 키/배포** — Google Cloud에서 **Static Maps API** 키 발급. 키는 img URL로 브라우저에 노출되므로 **반드시: ① API 제한 = Maps Static API 한 개만, ② HTTP referrer 제한 = 함수 도메인(`*.supabase.co/functions/v1/flyer*`), ③ 일일 쿼터 상한** 설정(남용 방지). `npx supabase secrets set GOOGLE_STATIC_MAPS_KEY=...`. `npx supabase functions deploy flyer --no-verify-jwt` (공개 페이지라 JWT 미검증).
 - [ ] **Step 2: 딥링크 확인** — `app.config.ts` scheme `meongbackhome` 이미 등록됨(SP1). expo-router가 `meongbackhome://report/<id>`를 `/report/[id]` 라우트로 매핑하는지 실기기 확인(필요 시 linking 설정).
 - [ ] **Step 3: QA 체크리스트**
   - [ ] 보호자: 신고 상세 "전단 공유" → QR 표시 + 링크 공유(카톡 등 미리보기 OG)
@@ -545,4 +571,6 @@ Render `{isOwner && report && <FlyerShare reportId={id} dogName={report.dog?.nam
 
 **3. Type consistency:** `SafeReport`(no phone), `renderFlyerHtml(r, {staticMapKey, appDeepLink})`, `flyerUrl(supabaseUrl, reportId)`/`buildFlyerUrl`/`shareMessage`, `NeighborhoodReport`/`MapBounds`, `reportsInBounds(b)`→rpc `active_reports_in_bounds{min_lng,min_lat,max_lng,max_lat}`. flyer 핸들러가 기존 `report_detail` RPC(SP3a, last_seen_lat/lng + dog jsonb) 재사용 — 시그니처 일치.
 
-> **알려진 한계/리스크:** ① flyer 실제 HTML·정적지도·딥링크는 배포+브라우저/실기기 검증(T10). 통합 테스트는 RPC(DB)만; render.ts 순수 헬퍼는 Deno. ② report_detail가 service role(auth.uid null)에서 active만 반환함에 의존 — 이 불변식이 flyer의 active-only·privacy를 보장(SP3a 0009 정의). ③ 지도 마커 대량 시 클러스터로 완화, 상한 필요하면 후속. ④ Static Maps 키는 img URL로 브라우저 노출 — referrer 제한 필수(T10).
+> **알려진 한계/리스크:** ① flyer 실제 HTML·정적지도·딥링크는 배포+브라우저/실기기 검증(T10). 통합 테스트는 RPC(DB)만; render.ts 순수 헬퍼는 Deno. ② report_detail가 service role(auth.uid null)에서 active만 반환함에 의존 — 이 불변식이 flyer의 active-only·privacy를 보장(SP3a 0009 정의). ③ 지도 마커 대량 시 클러스터로 완화, 상한 필요하면 후속. ④ Static Maps 키는 img URL로 브라우저 노출 — API 제한·referrer 제한·쿼터 필수(T10).
+
+**Codex 교차 리뷰(2026-06-02) 반영:** ① **(P1)** 기존 SP3a `report_detail` RPC가 PUBLIC execute라 anon이 직접 호출해 활성 신고 owner_id·상세를 가져갈 수 있던 누출 → 0012에서 revoke public/anon + grant authenticated,service_role로 차단 + 통합 테스트 추가 ② 동네 지도 `initialRegion`이 마운트 후 위치 갱신 안 되던 버그 → mapRef.animateToRegion ③ 디바운스 타이머 unmount 정리 추가 ④ render 무-누출 테스트 강화(phone/owner_id/emergency_contact를 일부러 넣어도 출력에 없음 단언) ⑤ Static Maps 키 API/쿼터 제한 명시.
