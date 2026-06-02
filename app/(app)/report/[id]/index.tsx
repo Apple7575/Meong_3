@@ -6,12 +6,14 @@ import { getReport } from '../../../../src/services/missingReports';
 import { getOrCreateChat } from '../../../../src/services/chats';
 import { ReportDetail as ReportDetailDto } from '../../../../src/types/db'; // aliased: component below is also named ReportDetail
 import { supabase } from '../../../../src/lib/supabase';
+import { FlyerShare } from '../../../../src/components/FlyerShare';
 
 export default function ReportDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [report, setReport] = useState<ReportDetailDto | null>(null);
   const [photo, setPhoto] = useState<string | null>(null);
   const [canChat, setCanChat] = useState(false);
+  const [isOwner, setIsOwner] = useState(false);
 
   useEffect(() => {
     getReport(id).then(async (r) => {
@@ -32,6 +34,8 @@ export default function ReportDetail() {
     });
   }, [id]);
 
+  useEffect(() => { supabase.auth.getUser().then(({ data }) => setIsOwner(!!report && data.user?.id === report.owner_id)); }, [report]);
+
   if (!report) return <View style={styles.c}><Text>불러오는 중...</Text></View>;
   const d = report.dog;
   return (
@@ -46,6 +50,7 @@ export default function ReportDetail() {
           <Marker coordinate={{ latitude: report.last_seen_lat, longitude: report.last_seen_lng }} title="마지막 목격" pinColor="#ef4444" />
         </MapView>
       </View>
+      {isOwner && report && <FlyerShare reportId={id} dogName={report.dog?.name ?? '실종견'} />}
       {canChat && (
         <Pressable style={[styles.cta, { backgroundColor: '#16a34a', marginBottom: 8 }]} onPress={async () => {
           try { const { data } = await supabase.auth.getUser(); const cid = await getOrCreateChat(id, data.user!.id); router.push(`/(app)/chat/${cid}`); }

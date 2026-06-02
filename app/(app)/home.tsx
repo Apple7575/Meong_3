@@ -55,6 +55,9 @@ export default function Home() {
       <Pressable style={styles.walkHist} onPress={() => router.push('/(app)/chats')}>
         <Text style={styles.walkHistText}>채팅</Text>
       </Pressable>
+      <Pressable style={styles.walkHist} onPress={() => router.push('/(app)/map')}>
+        <Text style={styles.walkHistText}>🗺️ 동네 실종 지도</Text>
+      </Pressable>
       <Pressable onPress={async () => { try { await signOut(); } catch { /* 이미 화면을 떠나는 중 */ } }}><Text style={styles.signout}>로그아웃</Text></Pressable>
     </View>
   );
