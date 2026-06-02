@@ -37,7 +37,7 @@ export type Sighting = {
 };
 export type Message = { id: string; chat_id: string; sender_id: string; body: string; created_at: string };
 export type ChatListItem = {
-  chat_id: string; report_id: string; other_nickname: string | null; dog_name: string | null;
+  chat_id: string; report_id: string; other_id: string; other_nickname: string | null; dog_name: string | null;
   report_status: ReportStatus; last_message_at: string; last_body: string | null;
 };
 export type NeighborhoodReport = { id: string; lat: number; lng: number; dog_name: string | null; last_seen_at: string; photo_path: string | null };

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { View, Text, TextInput, Pressable, FlatList, Alert, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { listMessages, sendMessage, subscribeToChat, myChats } from '../../../src/services/chats';
+import { blockUser, flagContent } from '../../../src/services/moderation';
 import { supabase } from '../../../src/lib/supabase';
 import { Message } from '../../../src/types/db';
 
@@ -11,14 +12,16 @@ export default function ChatThread() {
   const [text, setText] = useState('');
   const [me, setMe] = useState<string | null>(null);
   const [other, setOther] = useState<string>('대화');
+  const [otherId, setOtherId] = useState<string | null>(null);
   const [closed, setClosed] = useState(true); // safe default: read-only until metadata confirms the report is active
+  const [blocked, setBlocked] = useState(false);
   const [busy, setBusy] = useState(false);
   const listRef = useRef<FlatList<Message>>(null);
 
   useEffect(() => { supabase.auth.getUser().then(({ data }) => setMe(data.user?.id ?? null)); }, []);
   useEffect(() => {
     // keep read-only on metadata failure (don't silently allow sends)
-    myChats().then((rows) => { const c = rows.find((r) => r.chat_id === id); if (c) { setOther(c.other_nickname ?? '대화'); setClosed(c.report_status !== 'active'); } }).catch(() => {});
+    myChats().then((rows) => { const c = rows.find((r) => r.chat_id === id); if (c) { setOther(c.other_nickname ?? '대화'); setOtherId(c.other_id); setClosed(c.report_status !== 'active'); } }).catch(() => {});
     const add = (m: Message) => setMessages((prev) => {
       const byId = new Map(prev.map((x) => [x.id, x])); byId.set(m.id, m);
       return Array.from(byId.values()).sort((a, b) => a.created_at.localeCompare(b.created_at));
@@ -42,17 +45,42 @@ export default function ChatThread() {
     finally { setBusy(false); }
   }
 
+  function onBlock() {
+    if (!otherId) return;
+    Alert.alert('차단', `${other}님을 차단할까요? 더 이상 메시지를 주고받을 수 없어요.`, [
+      { text: '취소', style: 'cancel' },
+      { text: '차단', style: 'destructive', onPress: async () => {
+        try { await blockUser(otherId); setBlocked(true); }
+        catch (e: any) { Alert.alert('오류', e.message); }
+      } },
+    ]);
+  }
+  function onFlagMessage(messageId: string) {
+    Alert.alert('메시지 신고', '이 메시지를 신고할까요?', [
+      { text: '취소', style: 'cancel' },
+      { text: '신고', style: 'destructive', onPress: async () => {
+        try { await flagContent('message', messageId, '부적절한 메시지'); Alert.alert('접수됨', '신고가 접수되었어요.'); }
+        catch (e: any) { Alert.alert('오류', e.message); }
+      } },
+    ]);
+  }
+
   return (
     <KeyboardAvoidingView style={styles.c} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <Text style={styles.header}>{other}</Text>
+      <View style={styles.headerRow}>
+        <Text style={styles.header}>{other}</Text>
+        {otherId && !blocked && <Pressable onPress={onBlock}><Text style={styles.blockBtn}>차단</Text></Pressable>}
+      </View>
       <FlatList ref={listRef} data={messages} keyExtractor={(m) => m.id} contentContainerStyle={{ padding: 12, gap: 8 }}
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
         renderItem={({ item }) => (
-          <View style={[styles.bubble, item.sender_id === me ? styles.mine : styles.theirs]}>
+          <Pressable onLongPress={() => onFlagMessage(item.id)} style={[styles.bubble, item.sender_id === me ? styles.mine : styles.theirs]}>
             <Text style={item.sender_id === me ? styles.mineText : undefined}>{item.body}</Text>
-          </View>
+          </Pressable>
         )} />
-      {closed ? (
+      {blocked ? (
+        <Text style={styles.closed}>차단한 상대예요 (읽기 전용)</Text>
+      ) : closed ? (
         <Text style={styles.closed}>종료된 신고예요 (읽기 전용)</Text>
       ) : (
         <View style={styles.inputRow}>
@@ -65,7 +93,9 @@ export default function ChatThread() {
 }
 const styles = StyleSheet.create({
   c: { flex: 1 },
-  header: { fontSize: 17, fontWeight: '800', padding: 14, paddingTop: 48, borderBottomWidth: 1, borderColor: '#e2e8f0' },
+  headerRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', paddingHorizontal: 14, paddingTop: 48, paddingBottom: 14, borderBottomWidth: 1, borderColor: '#e2e8f0' },
+  header: { fontSize: 17, fontWeight: '800' },
+  blockBtn: { color: '#ef4444', fontWeight: '700' },
   bubble: { maxWidth: '78%', padding: 10, borderRadius: 14 },
   mine: { alignSelf: 'flex-end', backgroundColor: '#7c3aed' }, mineText: { color: '#fff' },
   theirs: { alignSelf: 'flex-start', backgroundColor: '#f1f5f9' },
