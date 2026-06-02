@@ -1,0 +1,45 @@
+{
+  "cli": {
+    "version": ">= 12.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://ncvpijihbmpnwvqdomzg.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5jdnBpamloYm1wbnd2cWRvbXpnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzMzM4MzQsImV4cCI6MjA5NTkwOTgzNH0.UsmkQiiVcHeNsMUp2aGimZk47dAuhmGcDrFtebOSKic",
+        "EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY": "REPLACE_WITH_ANDROID_MAPS_SDK_KEY",
+        "EXPO_PUBLIC_KAKAO_NATIVE_APP_KEY": "REPLACE_WITH_KAKAO_NATIVE_APP_KEY"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://ncvpijihbmpnwvqdomzg.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5jdnBpamloYm1wbnd2cWRvbXpnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzMzM4MzQsImV4cCI6MjA5NTkwOTgzNH0.UsmkQiiVcHeNsMUp2aGimZk47dAuhmGcDrFtebOSKic",
+        "EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY": "REPLACE_WITH_ANDROID_MAPS_SDK_KEY",
+        "EXPO_PUBLIC_KAKAO_NATIVE_APP_KEY": "REPLACE_WITH_KAKAO_NATIVE_APP_KEY"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://ncvpijihbmpnwvqdomzg.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5jdnBpamloYm1wbnd2cWRvbXpnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzMzM4MzQsImV4cCI6MjA5NTkwOTgzNH0.UsmkQiiVcHeNsMUp2aGimZk47dAuhmGcDrFtebOSKic",
+        "EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY": "REPLACE_WITH_ANDROID_MAPS_SDK_KEY",
+        "EXPO_PUBLIC_KAKAO_NATIVE_APP_KEY": "REPLACE_WITH_KAKAO_NATIVE_APP_KEY"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}
