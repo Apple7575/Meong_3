@@ -38,7 +38,7 @@ supabase migration list --linked   # verify remote has 0001..0014
 - `expire-reports` — `0 3 * * *`
 - `purge-notif-logs` — `30 3 * * *`
 
-**3. Set Edge Function secrets** (only these two; `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` are auto-injected)
+**3. Set Edge Function secrets** ✅ DONE (FCM_SERVICE_ACCOUNT + GOOGLE_STATIC_MAPS_KEY set 2026-06-02) — only these two; `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` are auto-injected
 ```bash
 # Firebase service-account JSON for FCM HTTP v1 (used by notify-nearby + notify-message)
 supabase secrets set FCM_SERVICE_ACCOUNT="$(cat /path/to/firebase-service-account.json)"
@@ -47,7 +47,7 @@ supabase secrets set GOOGLE_STATIC_MAPS_KEY="<google-static-maps-key>"
 supabase secrets list   # confirm both present
 ```
 
-**4. Deploy the three Edge Functions**
+**4. Deploy the three Edge Functions** ✅ DONE (flyer/notify-nearby/notify-message ACTIVE v1, 2026-06-02; flyer health-checked 200 at `https://ncvpijihbmpnwvqdomzg.supabase.co/functions/v1/flyer`)
 ```bash
 # flyer is PUBLIC (anonymous browsers hit it) -> must skip JWT verification
 supabase functions deploy flyer --no-verify-jwt
