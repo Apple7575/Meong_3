@@ -22,3 +22,7 @@ dist/
 ios/build/
 android/build/
 android/app/build/
+
+# Firebase client config (provide to EAS as a file secret, do not commit)
+google-services.json
+GoogleService-Info.plist

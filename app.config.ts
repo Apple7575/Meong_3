@@ -7,7 +7,13 @@ const config: ExpoConfig = {
   version: '0.1.0',
   orientation: 'portrait',
   ios: { bundleIdentifier: 'com.meongbackhome.app', supportsTablet: false, infoPlist: { UIBackgroundModes: ['location'] } },
-  android: { package: 'com.meongbackhome.app', config: { googleMaps: { apiKey: process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY } } },
+  android: {
+    package: 'com.meongbackhome.app',
+    // EAS injects GOOGLE_SERVICES_JSON (file secret) as a path at build time; falls back to the
+    // local (gitignored) file for `expo run:android`.
+    googleServicesFile: process.env.GOOGLE_SERVICES_JSON ?? './google-services.json',
+    config: { googleMaps: { apiKey: process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY } },
+  },
   plugins: [
     'expo-router',
     'expo-secure-store',
