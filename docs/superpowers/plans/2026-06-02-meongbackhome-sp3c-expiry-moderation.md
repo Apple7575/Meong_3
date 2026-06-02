@@ -24,7 +24,7 @@
 | File | Responsibility |
 |------|----------------|
 | `supabase/migrations/0013_expiry.sql` (create) | pg_cron extension + `expire_old_reports()` + `purge_old_notification_logs()` + 2 cron schedules + execute locks |
-| `supabase/migrations/0014_moderation.sql` (create) | `sightings.hidden` column + `hide_sighting` RPC + `report_sightings` hidden filter + `blocks` table & RLS + `messages_insert` block guard + `my_chats` rebuild (adds `other_id`, excludes blocked) + `content_flags` table & RLS |
+| `supabase/migrations/0014_moderation.sql` (create) | `sightings.hidden` column + `hide_sighting` RPC + `report_sightings` hidden filter + `blocks` table & RLS + `chat_has_block` SECURITY DEFINER helper + `messages_insert` block guard + `my_chats` rebuild (adds `other_id`, excludes blocked) + `content_flags` table & RLS |
 | `supabase/tests/moderation.test.ts` (create) | Integration: expiry, purge, hide, block, flag, execute-lock |
 | `src/services/moderation.ts` (create) | `hideSighting`, `blockUser`, `unblockUser`, `flagContent` |
 | `src/services/moderation.test.ts` (create) | Unit tests (mocked supabase) |
@@ -45,9 +45,10 @@
 
 ```sql
 -- pg_cron-driven batch maintenance: auto-expire stale reports + purge old notification logs.
--- Installed without an explicit schema so the scheduling functions resolve as cron.schedule(...),
--- matching Supabase's documented usage. (The spec's "with schema extensions" would relocate
--- schedule() to the extensions schema and break the cron.schedule calls below.)
+-- pg_cron installs its own `cron` schema (cron.job, cron.schedule, ...), which is why we call
+-- cron.schedule(...) below regardless of any schema clause. We omit `with schema extensions`
+-- and use the extension default; Task A1 Step 2 verifies `db reset` applies this cleanly on the
+-- local stack, and Phase D verifies the extension is enabled + jobs registered in cloud.
 create extension if not exists pg_cron;
 
 -- Flip active reports past their expires_at to 'expired'. Idempotent — safe to re-run every cycle.
@@ -154,23 +155,37 @@ create table public.blocks (
   unique (blocker_id, blocked_id)
 );
 alter table public.blocks enable row level security;
--- A user manages only their own block rows (select/insert/delete).
-create policy "blocks_own" on public.blocks for all to authenticated
-  using (blocker_id = auth.uid()) with check (blocker_id = auth.uid());
+-- A user manages only their own block rows. Explicit select/insert/delete (no update) to match
+-- the contract — a block row is immutable once created; you unblock by deleting it.
+create policy "blocks_select_own" on public.blocks for select to authenticated using (blocker_id = auth.uid());
+create policy "blocks_insert_own" on public.blocks for insert to authenticated with check (blocker_id = auth.uid());
+create policy "blocks_delete_own" on public.blocks for delete to authenticated using (blocker_id = auth.uid());
+
+-- Block existence check, SECURITY DEFINER so it bypasses `blocks` RLS. This is REQUIRED for a
+-- bidirectional guard: blocks_select_own only exposes a user's OWN block rows, so if it were
+-- queried directly inside the messages_insert policy (evaluated as the inserting user), the
+-- blocked party would never see the blocker's row and could keep sending. The helper returns
+-- only a boolean (no leak of who blocked whom) for the two participants of the given chat.
+create or replace function public.chat_has_block(p_chat_id uuid)
+returns boolean language sql security definer set search_path = public stable as $$
+  select exists (
+    select 1 from public.blocks b join public.chats c on c.id = p_chat_id
+     where (b.blocker_id = c.owner_id    and b.blocked_id = c.reporter_id)
+        or (b.blocker_id = c.reporter_id and b.blocked_id = c.owner_id)
+  );
+$$;
+revoke execute on function public.chat_has_block(uuid) from public, anon;
+grant  execute on function public.chat_has_block(uuid) to authenticated;
 
 -- Bidirectional block guard on message sends: if either chat participant has blocked the other,
--- nobody in that chat can send. Rebuild of 0010's messages_insert with the extra `not exists` clause.
+-- nobody in that chat can send. Rebuild of 0010's messages_insert adding the chat_has_block clause.
 drop policy "messages_insert" on public.messages;
 create policy "messages_insert" on public.messages for insert to authenticated
   with check (
     sender_id = auth.uid()
     and exists (select 1 from public.chats c join public.missing_reports r on r.id = c.report_id
                 where c.id = chat_id and auth.uid() in (c.owner_id, c.reporter_id) and r.status = 'active')
-    and not exists (
-      select 1 from public.blocks b join public.chats c2 on c2.id = chat_id
-       where (b.blocker_id = c2.owner_id    and b.blocked_id = c2.reporter_id)
-          or (b.blocker_id = c2.reporter_id and b.blocked_id = c2.owner_id)
-    )
+    and not public.chat_has_block(chat_id)
   );
 
 -- Rebuild my_chats (0011) to (a) expose other_id for the block UI and (b) hide threads with
@@ -290,6 +305,27 @@ describe('SP3c expiry + moderation', () => {
     // chat is now read-only (messages_insert requires status='active')
     const ins = await reporter.client.from('messages').insert({ chat_id: chatId, sender_id: reporter.id, body: 'late' });
     expect(ins.error).not.toBeNull();
+    // idempotent: a second run leaves the already-expired row untouched (no error, still expired)
+    expect((await admin.rpc('expire_old_reports')).error).toBeNull();
+    const again = (await admin.from('missing_reports').select('status').eq('id', reportId).single()).data as any;
+    expect(again.status).toBe('expired');
+  });
+
+  test('expire_old_reports does not touch non-active or not-yet-due reports', async () => {
+    const t = Date.now();
+    const owner = await makeUser(`exp2-o-${t}@t.dev`, '보호자');
+    const reporter = await makeUser(`exp2-r-${t}@t.dev`, '제보자');
+    // a future-dated active report (not due) and a resolved past-due report (already closed)
+    const future = await makeReportWithSighting(owner, reporter);
+    await admin.from('missing_reports').update({ expires_at: '2999-01-01T00:00:00Z' }).eq('id', future.reportId);
+    const resolved = await makeReportWithSighting(owner, reporter);
+    await admin.from('missing_reports').update({ status: 'resolved', expires_at: '2000-01-01T00:00:00Z' }).eq('id', resolved.reportId);
+
+    expect((await admin.rpc('expire_old_reports')).error).toBeNull();
+    const futureRow = (await admin.from('missing_reports').select('status').eq('id', future.reportId).single()).data as any;
+    expect(futureRow.status).toBe('active'); // not due -> untouched
+    const resolvedRow = (await admin.from('missing_reports').select('status').eq('id', resolved.reportId).single()).data as any;
+    expect(resolvedRow.status).toBe('resolved'); // not active -> resolved is NOT overwritten with expired
   });
 
   test('purge_old_notification_logs deletes rows older than 30 days, keeps recent', async () => {
@@ -336,6 +372,17 @@ describe('SP3c expiry + moderation', () => {
     expect((restored.data as any[]).some((s) => s.id === sightingId)).toBe(true);
   });
 
+  test('hiding a sighting does NOT break chat eligibility (get_or_create_chat keys off raw sightings)', async () => {
+    const t = Date.now();
+    const owner = await makeUser(`hidc-o-${t}@t.dev`, '보호자');
+    const reporter = await makeUser(`hidc-r-${t}@t.dev`, '제보자');
+    const { reportId, sightingId } = await makeReportWithSighting(owner, reporter);
+    await owner.client.rpc('hide_sighting', { p_sighting_id: sightingId, p_hidden: true });
+    // reporter still has a (hidden) sighting on the report, so chat creation must still succeed
+    const chat = await reporter.client.rpc('get_or_create_chat', { p_report_id: reportId, p_reporter_id: reporter.id });
+    expect(chat.error).toBeNull();
+  });
+
   test('block: A blocks B -> messages denied both ways + thread hidden from A my_chats', async () => {
     const t = Date.now();
     const owner = await makeUser(`blk-o-${t}@t.dev`, '보호자');
@@ -358,6 +405,20 @@ describe('SP3c expiry + moderation', () => {
     expect((ownerChats.data as any[]).some((c) => c.chat_id === chatId)).toBe(false);
     const reporterChats = await reporter.client.rpc('my_chats');
     expect((reporterChats.data as any[]).some((c) => c.chat_id === chatId)).toBe(true);
+  });
+
+  test('block (reverse direction): reporter blocks owner -> both sends denied', async () => {
+    const t = Date.now();
+    const owner = await makeUser(`blkr-o-${t}@t.dev`, '보호자');
+    const reporter = await makeUser(`blkr-r-${t}@t.dev`, '제보자');
+    const { reportId } = await makeReportWithSighting(owner, reporter);
+    const chat = await reporter.client.rpc('get_or_create_chat', { p_report_id: reportId, p_reporter_id: reporter.id });
+    const chatId = chat.data as string;
+    // reporter (not owner) blocks owner
+    expect((await reporter.client.from('blocks').insert({ blocker_id: reporter.id, blocked_id: owner.id })).error).toBeNull();
+    // guard is bidirectional regardless of who blocked whom
+    expect((await owner.client.from('messages').insert({ chat_id: chatId, sender_id: owner.id, body: 'x' })).error).not.toBeNull();
+    expect((await reporter.client.from('messages').insert({ chat_id: chatId, sender_id: reporter.id, body: 'y' })).error).not.toBeNull();
   });
 
   test('my_chats exposes other_id (the other participant)', async () => {
@@ -386,10 +447,17 @@ describe('SP3c expiry + moderation', () => {
     expect(denied.error).not.toBeNull();
   });
 
-  test('anonymous cannot execute expiry/purge functions (execute revoked)', async () => {
+  test('expiry/purge functions are locked to service_role (anon AND authenticated denied)', async () => {
+    const t = Date.now();
     const anon = createClient(URL, ANON, { auth: { persistSession: false } });
     expect((await anon.rpc('expire_old_reports')).error).not.toBeNull();
     expect((await anon.rpc('purge_old_notification_logs')).error).not.toBeNull();
+    // a signed-in (authenticated) user must also be denied — only service_role / cron may run these
+    const user = await makeUser(`lock-${t}@t.dev`, '잠금');
+    expect((await user.client.rpc('expire_old_reports')).error).not.toBeNull();
+    expect((await user.client.rpc('purge_old_notification_logs')).error).not.toBeNull();
+    // hide_sighting is authenticated-only: anon denied at the execute level
+    expect((await anon.rpc('hide_sighting', { p_sighting_id: '00000000-0000-0000-0000-000000000001', p_hidden: true })).error).not.toBeNull();
   });
 });
 ```
@@ -865,8 +933,13 @@ This phase is **manual** — it needs the deployed cloud Supabase project and a 
 - §6 dependency on pg_cron noted (A1 Step 2 guard). ✓
 
 **Decisions/deviations from spec (intentional):**
-1. `create extension if not exists pg_cron;` **without** `with schema extensions` — so `cron.schedule(...)` resolves (installing into `extensions` would relocate `schedule()` and break those calls). Documented inline in A1.
-2. Added `other_id` to `my_chats` (and `ChatListItem`) — required so the chat screen knows who to block. Not in spec but necessary for §4's block UI; `chat.test.ts` shape assertions stay valid (only checks `other_nickname`/`dog_name`/no-`phone`).
+1. `create extension if not exists pg_cron;` **without** a schema clause — pg_cron installs its own `cron` schema, so `cron.schedule(...)` resolves regardless. A1 Step 2 verifies clean apply.
+2. Added `other_id` to `my_chats` (and `ChatListItem`) — required so the chat screen knows who to block. Not in spec but necessary for §4's block UI; `chat.test.ts` shape assertions stay valid (only checks `other_nickname`/`dog_name`/no-`phone`). Codex confirmed this is not a leak (limited to chat participants). Kept the spec's `blockUser(blockedId)` service signature rather than switching to a `block_chat(chatId)` RPC (Codex P2 suggestion) to honor the approved spec.
+
+**Codex review applied (run 2026-06-02):**
+- **P1 (fixed):** the block guard originally queried `blocks` directly inside `messages_insert`, where `blocks` RLS (`blocker_id = auth.uid()`) hides the *other* party's block row from the inserting user → one-directional block. Replaced with the `chat_has_block(chat_id)` SECURITY DEFINER helper that bypasses `blocks` RLS and returns a boolean. (`my_chats`'s block exclusion is unaffected — it already runs in a definer context, and `auth.uid()` still resolves to the caller there.)
+- **P2 (fixed):** corrected the pg_cron comment (A1); added tests for expiry idempotency + non-active/not-due rows (A3), hide-does-not-break-chat-eligibility (A3), reverse block direction (A3), and authenticated-denial for expire/purge + anon-denial for hide_sighting (A3).
+- **P3 (fixed):** split `blocks_own (for all)` into explicit `select`/`insert`/`delete` policies (no update).
 
 **Placeholder scan:** none — every code/SQL step is complete. ✓
 
