@@ -6,8 +6,6 @@
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-native-firebase/app": "^24.0.0",
     "@react-native-firebase/messaging": "^24.0.0",
-    "@react-native-kakao/core": "^2.4.5",
-    "@react-native-kakao/map": "^2.2.7",
     "@supabase/supabase-js": "^2.106.2",
     "expo": "~56.0.8",
     "expo-auth-session": "~56.0.13",
