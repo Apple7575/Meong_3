@@ -35,6 +35,7 @@ const config: ExpoConfig = {
     supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL,
     supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
     googleMapsAndroidKey: process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY,
+    eas: { projectId: 'd942fcc8-c521-44cd-a1cd-9147d110f3c7' },
   },
 };
 export default config;
