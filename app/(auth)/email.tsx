@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { View, Text, TextInput, Pressable, Alert, StyleSheet } from 'react-native';
+import { router } from 'expo-router';
 import { signInWithEmail, signUpWithEmail } from '../../src/services/auth';
 
 export default function EmailAuth() {
@@ -12,7 +13,9 @@ export default function EmailAuth() {
     try {
       setBusy(true);
       if (mode === 'in') await signInWithEmail(email.trim(), pw);
-      else { await signUpWithEmail(email.trim(), pw); Alert.alert('가입 완료', '인증 메일을 확인해주세요.'); }
+      else await signUpWithEmail(email.trim(), pw);
+      // hand off to the entry gate (app/index.tsx) → routes to onboarding or home based on session
+      router.replace('/');
     } catch (e: any) { Alert.alert('오류', e.message); }
     finally { setBusy(false); }
   }
