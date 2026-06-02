@@ -13,6 +13,8 @@ export default function NeighborhoodMap() {
   const [reports, setReports] = useState<NeighborhoodReport[]>([]);
   const [recentOnly, setRecentOnly] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useRef(true);
+  const reqSeq = useRef(0); // latest-wins: ignore out-of-order / post-unmount responses
   // Cast to MapView (react-native-maps) because the clustering lib forwards the ref to the
   // inner MapView instance (forwardRef in JS), but its TS declaration is a class not forwardRef.
   const mapRef = useRef<MapView | null>(null);
@@ -26,15 +28,18 @@ export default function NeighborhoodMap() {
       fetchFor(region);
     });
   }, []);
-  // clear the debounce timer on unmount so we don't setReports after leaving
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  // on unmount: stop applying results + clear pending debounce
+  useEffect(() => () => { mounted.current = false; if (timer.current) clearTimeout(timer.current); }, []);
 
   function fetchFor(region: Region) {
     const minLat = region.latitude - region.latitudeDelta / 2;
     const maxLat = region.latitude + region.latitudeDelta / 2;
     const minLng = region.longitude - region.longitudeDelta / 2;
     const maxLng = region.longitude + region.longitudeDelta / 2;
-    reportsInBounds({ minLng, minLat, maxLng, maxLat }).then(setReports).catch((e: Error) => Alert.alert('오류', e.message));
+    const myReq = ++reqSeq.current;
+    reportsInBounds({ minLng, minLat, maxLng, maxLat })
+      .then((rows) => { if (mounted.current && myReq === reqSeq.current) setReports(rows); })   // latest-wins
+      .catch((e: Error) => { if (mounted.current && myReq === reqSeq.current) Alert.alert('오류', e.message); });
   }
   function onRegionChange(region: Region) {
     if (timer.current) clearTimeout(timer.current);

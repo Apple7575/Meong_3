@@ -34,7 +34,11 @@ export default function ReportDetail() {
     });
   }, [id]);
 
-  useEffect(() => { supabase.auth.getUser().then(({ data }) => setIsOwner(!!report && data.user?.id === report.owner_id)); }, [report]);
+  // only resolve ownership once the report is loaded — avoids the report=null first-run racing the loaded run
+  useEffect(() => {
+    if (!report) return;
+    supabase.auth.getUser().then(({ data }) => setIsOwner(data.user?.id === report.owner_id));
+  }, [report]);
 
   if (!report) return <View style={styles.c}><Text>불러오는 중...</Text></View>;
   const d = report.dog;
