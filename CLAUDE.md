@@ -4,12 +4,12 @@ Location-based lost-dog rescue app. Expo (React Native, TypeScript) + Supabase (
 
 ## Deploy Configuration (configured by /setup-deploy)
 - Platform: **Supabase cloud** (backend) + **EAS/Expo** (mobile app) — no web PaaS, no auto-deploy-on-push
-- Backend URL: `https://<PROJECT_REF>.supabase.co`  *(no cloud project linked yet — replace `<PROJECT_REF>` after `supabase link`)*
+- Backend URL: `https://ncvpijihbmpnwvqdomzg.supabase.co`  *(project MeongBackHome — linked; migrations 0001–0014 applied 2026-06-02)*
 - Deploy workflow: **manual** (`supabase db push` + `supabase functions deploy`; `eas build`/`eas submit` for the app)
 - Deploy status command: `supabase functions list` and `supabase migration list --linked`
 - Merge method: merge (PRs merged with `gh pr merge <N> --merge`, per project history)
 - Project type: native mobile app + Supabase backend
-- Post-deploy health check: `curl -sf "https://<PROJECT_REF>.supabase.co/functions/v1/flyer?report=<any-active-report-uuid>" -o /dev/null -w "%{http_code}"` (expects 200; flyer is the only public HTTP surface)
+- Post-deploy health check: `curl -sf "https://ncvpijihbmpnwvqdomzg.supabase.co/functions/v1/flyer?report=<any-active-report-uuid>" -o /dev/null -w "%{http_code}"` (expects 200; flyer is the only public HTTP surface)
 
 ### Custom deploy hooks
 - Pre-merge: `npm test` (63 unit) + `npm run test:rls` (35 integration, needs local Supabase up) + `npx tsc --noEmit`
@@ -21,15 +21,13 @@ Location-based lost-dog rescue app. Expo (React Native, TypeScript) + Supabase (
 
 ### Backend deploy runbook (Supabase cloud) — run once to set up, then per release
 
-**0. One-time: create + link the cloud project**
+**0. One-time: create + link the cloud project** ✅ DONE (linked to `ncvpijihbmpnwvqdomzg`)
 ```bash
-# Create a project at https://supabase.com/dashboard (note the project ref, e.g. abcd1234efgh)
 supabase login
-supabase link --project-ref <PROJECT_REF>
+supabase link --project-ref ncvpijihbmpnwvqdomzg
 ```
-Then replace every `<PROJECT_REF>` in this file with the real ref.
 
-**1. Push migrations (0001–0014)**
+**1. Push migrations (0001–0014)** ✅ DONE (applied 2026-06-02; `supabase migration list --linked` shows 0001–0014 on both sides)
 ```bash
 supabase db push          # applies all migrations incl. storage buckets (dog-images, sightings)
 supabase migration list --linked   # verify remote has 0001..0014
@@ -65,12 +63,12 @@ supabase functions list   # confirm all three ACTIVE
 - (Realtime for chat is already enabled by migration `0010_chat.sql` via `alter publication supabase_realtime add table public.messages`.)
 
 **6. Point the app at the cloud project** — set the app's env (`.env` / EAS secrets):
-- `EXPO_PUBLIC_SUPABASE_URL=https://<PROJECT_REF>.supabase.co`
+- `EXPO_PUBLIC_SUPABASE_URL=https://ncvpijihbmpnwvqdomzg.supabase.co`
 - `EXPO_PUBLIC_SUPABASE_ANON_KEY=<anon-key>` (Dashboard → Project Settings → API)
 
 **7. Health check**
 ```bash
-curl -sf "https://<PROJECT_REF>.supabase.co/functions/v1/flyer?report=<active-report-uuid>" -o /dev/null -w "%{http_code}\n"   # expect 200
+curl -sf "https://ncvpijihbmpnwvqdomzg.supabase.co/functions/v1/flyer?report=<active-report-uuid>" -o /dev/null -w "%{http_code}\n"   # expect 200
 ```
 
 ### App deploy runbook (EAS/Expo)
