@@ -57,7 +57,7 @@ supabase functions deploy notify-message
 supabase functions list   # confirm all three ACTIVE
 ```
 
-**5. Wire Database Webhooks** (Dashboard → Database → Webhooks) — these trigger the notify-* functions
+**5. Wire Database Webhooks** ✅ DONE (2026-06-02; both triggers verified via `supabase db dump --linked`: `notify-nearby` on missing_reports INSERT, `notify-message` on messages INSERT — auth header uses the anon JWT, which passes the function gateway; functions use their own injected service-role for DB work) — Dashboard → Database → Webhooks
 - **notify-nearby**: table `public.missing_reports`, event `INSERT`, type "Supabase Edge Functions" → `notify-nearby`. Add header `Authorization: Bearer <SERVICE_ROLE_KEY>`.
 - **notify-message**: table `public.messages`, event `INSERT`, → `notify-message`. Same auth header.
 - (Realtime for chat is already enabled by migration `0010_chat.sql` via `alter publication supabase_realtime add table public.messages`.)
