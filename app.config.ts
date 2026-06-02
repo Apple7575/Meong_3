@@ -14,7 +14,7 @@ const config: ExpoConfig = {
     '@react-native-firebase/app',
     '@react-native-firebase/messaging',
     ['expo-build-properties', { ios: { useFrameworks: 'static' } }],
-    ['@react-native-kakao/core', { nativeAppKey: process.env.EXPO_PUBLIC_KAKAO_NATIVE_APP_KEY }],
+    // Kakao SDK plugin temporarily removed — Kakao login deferred (email auth only for now).
     [
       'expo-location',
       {
@@ -28,7 +28,6 @@ const config: ExpoConfig = {
   extra: {
     supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL,
     supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
-    kakaoNativeAppKey: process.env.EXPO_PUBLIC_KAKAO_NATIVE_APP_KEY,
     googleMapsAndroidKey: process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY,
   },
 };
